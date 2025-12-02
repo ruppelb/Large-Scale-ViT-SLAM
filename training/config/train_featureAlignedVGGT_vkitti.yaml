@@ -1,0 +1,149 @@
+defaults:
+  - default_dataset.yaml
+  - _self_
+
+#project_name: Aligned_VGGT
+#exp_name: offsetVGGT_vkitti_align[frameSe3+chunkSe3+chunkScale]_loss[pose+poseRel+frameReg+chunkReg]_gtAlignment[scaleFromDepths]_aug[ChunkSubsampling+RandomChunkWidth+RandomOverlap]
+#tags: ["vkitti"]
+img_size: 518
+num_workers: 2
+seed_value: 42
+accum_steps: 1    # We did not use gradient accumulation in our training, while if you suffer from OOM, you can try to use it.
+patch_size: 14
+val_epoch_freq: 250
+max_img_per_gpu: 40
+num_overlap: [1,5]
+sample_mode: chunk_overlap #one of: chunk_overlap, chunk_gt, all
+chunk_width: [3,20]
+gt_alignment_type: scale_from_depths #one of: scale_from_depths, per_chunk_scale_from_poses, scale_from_poses, scale_from_fc_poses, sim3_from_poses, sim3_from_points, null
+max_steps: 70000
+mode: train #one of: train, validate, test
+
+data:
+  train:
+    _target_: vggt.training.data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: ${num_workers}
+    max_img_per_gpu: ${max_img_per_gpu}
+    common_config:
+      img_size: ${img_size}
+      patch_size: ${patch_size}
+      fix_aspect_ratio: 0.3
+      img_nums: [3,40]
+      
+    dataset:
+      _target_: vggt.training.data.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: datasets.vkitti.VKittiDataset
+          split: train
+          VKitti_DIR: /home/stud/rupb/storage/group/dataset_mirrors/01_incoming/vkitti
+          sequence_ids: ["02","06","18","20"]
+
+  val:
+    _target_: vggt.training.data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: ${num_workers}
+    max_img_per_gpu: ${max_img_per_gpu}
+    common_config:
+      img_size: ${img_size}
+      patch_size: ${patch_size}
+      fix_aspect_ratio: 0.3
+      fix_img_num: 14
+      img_nums: [14, 28] #set so we do only sample one batch
+
+    dataset:
+      _target_: vggt.training.data.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: datasets.vkitti.VKittiDataset
+          split: test
+          VKitti_DIR: /home/stud/rupb/storage/group/dataset_mirrors/01_incoming/vkitti
+          sequence_ids: ["01"]
+          settings: ["clone"]
+
+logging:
+  log_dir: models
+  log_visuals: False
+  log_freq: 10
+
+checkpoint:
+  save_freq: 500
+  resume_from_checkpoint: True
+  from_pretrained: facebook/VGGT-1B
+  model_checkpoint_path: null
+
+metrics:
+  _target_: training_metrics.Metrics
+  mode: ${mode}
+  overlap: [1,1]
+  chunk_width: [5,5]
+  full_seq_sample_mode: chunk_overlap
+  gt_alignment_type: ${gt_alignment_type}
+  trajectory_metrics: null
+  #- _target_: eval.trajectory_metrics.AbsoluteTrajectoryError
+  #- _target_: eval.trajectory_metrics.RelativePoseError
+  #- _target_: eval.trajectory_metrics.ScaleConsistency
+  reconstruction_metrics: null
+  #- _target_: eval.reconstruction_metrics.ChamferDistanceMetrics
+
+loss:
+  _target_: loss.MultitaskLoss
+  cameraPose:
+    weight: 1.0
+    warmup_percent: 0.02
+    warmup_type: "linear"
+    loss_type: "l1"
+  cameraPoseRel:
+    weight: 0.5
+    warmup_start_percent: 0.02
+    warmup_percent: 0.02
+    warmup_type: "linear"
+    loss_type: "l1"
+  depth:
+    weight: 0.1
+    warmup_start_percent: 0.02
+    warmup_percent: 0.02
+    warmup_type: "linear"
+    valid_range: 0.98
+  perFrameReg:
+    weight: 5.0
+    warmup_start_percent: 0.01
+    warmup_percent: 0.01
+    warmup_type: "linear"
+  perChunkReg:
+    weight: 5.0
+    warmup_percent: 0.01
+    warmup_type: "linear"
+
+optim:
+  param_group_modifiers: False
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 5e-5
+    weight_decay: 0.05
+
+  frozen_module_names:
+      - "*aggregator*"
+      - "*camera_head*"
+      - "*depth_head*"
+
+  amp:
+    amp_dtype: bf16-mixed #if disabled, set it to null
+  gradient_clip:
+      max_norm: 1.0 # feel free to reduce this if you see instabilities
+      norm_type: 2
+  options:
+    lr:
+      min_value: 1e-8
+      max_value: 5e-5
+      linear_steps: 0.05
+
+model:
+  _target_: aligned_vggt.models.featureAligned_vggt.FeatureAlignedVGGT
+  patch_size: ${patch_size}
+  img_size: ${img_size}
+  enable_camera: True
+  enable_depth: True
+  enable_point: False
+  enable_track: False
+  num_memory_tokens: 8
+  temporal_attention: True
+  simple_decoder: False

@@ -1,0 +1,138 @@
+# Template for the dataset config
+data:
+  # The code still looks too complicated. I should refactor this again (do I have time?...)
+  train:
+    _target_: data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: 8
+    max_img_per_gpu: 48
+    # Shuffling in PyTorch DataLoader can sometimes copy large dicts and exceed CPU memory
+    # (see: https://github.com/pytorch/pytorch/issues/13246).
+    # To avoid this, set shuffle=False and enable common_config.inside_random=True instead.
+    shuffle: True
+    pin_memory: False
+    common_config:  # common config for evaluation
+      fix_img_num: -1 # -1 means do not fix the number of images
+      fix_aspect_ratio: -1 # -1 means do not fix the aspect ratio
+      load_track: False
+      track_num: 1024
+      training: True
+      inside_random: True
+      img_size: 224
+      patch_size: 14
+      rescale: True
+      rescale_aug: False
+      landscape_check: False
+      debug: False
+      get_nearby: True
+      load_depth: True
+      img_nums: [2, 24]
+      allow_duplicate_img: True
+      repeat_batch: False
+      fix_seq_img_num: 0 #own parameter
+      overlapping: True #own parameter
+      subsampling_step: 1 #own parameter
+
+      augs:
+        cojitter: False #same color jitter applied to all frames (across batch and subtrajectory sampled)
+        cojitter_ratio: 0.3
+        scales: null
+        aspects: [1.0, 1.0]
+        color_jitter:
+          brightness: 0.5
+          contrast: 0.5
+          saturation: 0.5
+          hue: 0.1
+          p: 0.0 #assures we do not apply color jitter
+        gray_scale: False
+        gau_blur: False
+        chunk_subsampling: [1,5]
+
+  val:
+    _target_: data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: 8
+    max_img_per_gpu: 48
+    # Shuffling in PyTorch DataLoader can sometimes copy large dicts and exceed CPU memory
+    # (see: https://github.com/pytorch/pytorch/issues/13246).
+    # To avoid this, set shuffle=False and enable common_config.inside_random=True instead.
+    shuffle: True
+    pin_memory: False
+    common_config:  # common config for evaluation
+      fix_img_num: -1 # -1 means do not fix the number of images
+      fix_aspect_ratio: -1
+      load_track: False
+      track_num: 1024
+      training: False
+      inside_random: True
+      img_size: 224
+      patch_size: 14
+      rescale: True
+      rescale_aug: False
+      landscape_check: False
+      debug: True
+      get_nearby: True
+      load_depth: True
+      img_nums: [2, 12]
+      allow_duplicate_img: True
+      fix_seq_img_num: 0 #own parameter
+      overlapping: True #own parameter
+      subsampling_step: 1 #own parameter
+
+      augs:
+        cojitter: False
+        cojitter_ratio: 0.5
+        scales: null
+        aspects: [1.0, 1.0]
+        color_jitter:
+          brightness: 0.5
+          contrast: 0.5
+          saturation: 0.5
+          hue: 0.1
+          p: 0.0 #assures we do not apply color jitter
+        gray_scale: False
+        gau_blur: False
+        chunk_subsampling: [1,1]
+
+  test:
+    _target_: data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: 8
+    max_img_per_gpu: 48
+    # Shuffling in PyTorch DataLoader can sometimes copy large dicts and exceed CPU memory
+    # (see: https://github.com/pytorch/pytorch/issues/13246).
+    # To avoid this, set shuffle=False and enable common_config.inside_random=True instead.
+    shuffle: True
+    pin_memory: False
+    common_config:  # common config for evaluation
+      fix_img_num: -1 # -1 means do not fix the number of images
+      fix_aspect_ratio: -1
+      load_track: False
+      track_num: 1024
+      training: False
+      inside_random: True
+      img_size: 224
+      patch_size: 14
+      rescale: True
+      rescale_aug: False
+      landscape_check: False
+      debug: True
+      get_nearby: True
+      load_depth: True
+      img_nums: [2, 12]
+      allow_duplicate_img: True
+      fix_seq_img_num: 0 #own parameter
+      overlapping: True #own parameter
+      subsampling_step: 1 #own parameter
+
+      augs:
+        cojitter: False
+        cojitter_ratio: 0.5
+        scales: null
+        aspects: [1.0, 1.0]
+        color_jitter:
+          brightness: 0.5
+          contrast: 0.5
+          saturation: 0.5
+          hue: 0.1
+          p: 0.0 #assures we do not apply color jitter
+        gray_scale: False
+        gau_blur: False
+        chunk_subsampling: [1,1]
