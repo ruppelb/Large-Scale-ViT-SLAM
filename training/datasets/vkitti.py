@@ -6,8 +6,8 @@ import glob
 import cv2
 import numpy as np
 
-from training.data.dataset_util import *
-from training.data.base_dataset import BaseDataset
+from vggt.training.data.dataset_util import *
+from vggt.training.data.base_dataset import BaseDataset
 
 SCENES = [
     "01",

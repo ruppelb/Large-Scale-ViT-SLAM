@@ -7,9 +7,9 @@ import pandas as pd
 import cv2
 import numpy as np
 
-from training.data.dataset_util import *
-from training.data.base_dataset import BaseDataset
-from vggt.utils.geometry import closed_form_inverse_se3
+from vggt.training.data.dataset_util import *
+from vggt.training.data.base_dataset import BaseDataset
+from vggt.vggt.utils.geometry import closed_form_inverse_se3
 from skimage.measure import label,regionprops
 
 

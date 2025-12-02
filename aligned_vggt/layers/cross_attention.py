@@ -1,30 +1,13 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-#
-# This source code is licensed under the Apache License, Version 2.0
-# found in the LICENSE file in the root directory of this source tree.
-
-# References:
-#   https://github.com/facebookresearch/dino/blob/master/vision_transformer.py
-#   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
-
-import logging
-import os
-import warnings
-
 import torch
 from torch import Tensor
 from torch import nn
 import torch.nn.functional as F
 
-import logging
-import os
-from typing import Callable, List, Any, Tuple, Dict
-import warnings
+from typing import Callable
 
-from vggt.layers.drop_path import DropPath
-from vggt.layers.layer_scale import LayerScale
-from vggt.layers.mlp import Mlp
-from vggt.layers.attention import Attention
+from vggt.vggt.layers.layer_scale import LayerScale
+from vggt.vggt.layers.mlp import Mlp
+from vggt.vggt.layers.attention import Attention
 
 XFORMERS_AVAILABLE = False
 

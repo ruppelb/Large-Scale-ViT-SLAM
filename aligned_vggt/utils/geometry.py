@@ -1,5 +1,5 @@
 import torch
-from vggt.utils.geometry import closed_form_inverse_se3
+from vggt.vggt.utils.geometry import closed_form_inverse_se3
 
 def unproject_depth_map_to_point_map(depth_map: torch.Tensor, extrinsics: torch.Tensor, intrinsics: torch.Tensor
 ) -> torch.Tensor:

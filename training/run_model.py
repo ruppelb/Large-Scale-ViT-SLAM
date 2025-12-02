@@ -1,38 +1,25 @@
 import os
-import glob
-import pandas as pd
-import cv2
 import numpy as np
-import wandb
 import argparse
 from typing import Any, Dict
-from math import ceil,floor
-import logging
-import time
 
 from hydra import initialize, compose
 from hydra.utils import instantiate
 from iopath.common.file_io import g_pathmgr
 
 import torch
-import torch.utils
-from torch.utils.data import Dataset
-
 from huggingface_hub import PyTorchModelHubMixin  # used for model hub
 
 import lightning as L
-from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import LearningRateMonitor,ModelCheckpoint,TQDMProgressBar
-from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.utilities import grad_norm
-#from pl_bolts.optimizers.lr_scheduler import LinearWarmupCosineAnnealingLR
+from lightning.pytorch.loggers import CSVLogger
 
-from vggt.utils.load_fn import load_and_preprocess_images
-from vggt.utils.geometry import closed_form_inverse_se3
-from train_utils.freeze import freeze_modules
-from train_utils.normalization import normalize_camera_extrinsics_and_points_batch
+from vggt.training.train_utils.freeze import freeze_modules
+from vggt.training.train_utils.normalization import normalize_camera_extrinsics_and_points_batch
 
 from aligned_vggt.utils.data import alignAndConvertOutputs, generate_chunks, chunk_batch
+
 class StepProgressBar(TQDMProgressBar):
 
     def on_train_epoch_start(self, trainer, *_):
@@ -68,11 +55,6 @@ class CustomModelCheckpoint(ModelCheckpoint):
 
     def on_train_epoch_end(self, trainer, pl_module):
         pass
-
-    #def _save_checkpoint(self, trainer, filepath):
-    #    #adapt file path to avoid racing condition (TODO: debug further why this even can happen in the first place)
-    #    filepath = f"{filepath.split('.')[0]}_rank[{trainer.global_rank}].ckpt"
-    #    super()._save_checkpoint(trainer, filepath)
 
     def _get_metric_interpolated_filepath_name(self, monitor_candidates, trainer, del_filepath = None):
         filepath = self.format_checkpoint_name(monitor_candidates)
@@ -120,172 +102,6 @@ class CustomModelCheckpoint(ModelCheckpoint):
                 os.remove(self.last_ckpt_path)
                 print(f"Removed last checkpoint link {self.last_ckpt_path}")
         trainer.strategy.barrier("Removing last checkpoint link")
-
-#adapted from https://actamachina.com/posts/visual-odometry
-class KITTIOdometryDatasetOld(Dataset):
-    def __init__(self, data_dir, samplingMode, sequence_ids, n=5, overlap=1):
-        """Initialize the KITTI Odometry Dataset.
-
-        Parameters:
-        - data_dir: Directory containing KITTI odometry data
-        - sequence_ids: List of sequence IDs to load
-        - n: Number of frames in a sequence chunk
-        - overlap: Overlap between sequence chunks
-        """
-        
-        self.samplingMode = samplingMode
-        # List to store data samples
-        data = []
-
-        # Load data for each specified sequence
-        for seq_id in sequence_ids:
-            image_paths = sorted(glob.glob(f"{data_dir}/sequences/{seq_id}/image_2/*"))
-
-            #load extrinsics
-            pose_data = pd.read_csv(f"{data_dir}/poses/{seq_id}.txt", header=None, sep='\s+')
-            extrinsics = pose_data.to_numpy().reshape(-1, 3, 4)
-            extrinsics = np.pad(extrinsics, ((0, 0), (0, 1), (0, 0)), mode="constant")
-            extrinsics[:,3,3] = 1.0
-            extrinsics = np.linalg.inv(extrinsics) #invert values to w->c
-
-            #load intrinsics
-            calib_data = pd.read_csv(f"{data_dir}/sequences/{seq_id}/calib.txt", header=None, sep='\s+',index_col=0)
-            projectionMatrix = calib_data.loc["P2:"].to_numpy().reshape(3, 4)
-            intrinsics,_,_,_,_,_,_= cv2.decomposeProjectionMatrix(projectionMatrix)
-            if len(intrinsics.shape) == 2:
-                #assume same intrinsics for all frame
-                intrinsics = np.repeat(intrinsics[None,...],extrinsics.shape[0],axis=0)
-            
-            #TODO: opt apply Augmentation. VGGT apply augmentation at two points. 
-            #Augmentation regarding orientation or size (which also affects pose or world points) is applied when initally preparing data.
-            #Color augmentation (jitter, blur, gray scale, etc) is applied in getitem() method
-            
-            if samplingMode == "overlappingEqualChunks" or samplingMode == "debug_sameChunk" or samplingMode == "debug_equalChunks" or samplingMode == "debug_randomChunk":
-                # Break sequence into chunks
-                for i in range(0, len(pose_data) - n, n - overlap):
-                    data.append(
-                        {
-                            "image_path": image_paths[i : i + n],
-                            "extrinsic": extrinsics[i : i + n],
-                            "intrinsic": intrinsics[i : i + n],
-                        }
-                    )
-            elif samplingMode == "randomChunks":
-                #TODO: implement random sampling (randomly sample 2–24 consecutive frames)
-                len(image_paths)
-                pass
-
-        self.df = pd.DataFrame(data)
-
-    def __getitem__(self, index):
-        if self.samplingMode == "debug_sameChunk":
-            # For debugging, only return the first sample
-            index = 0
-        
-        entry = self.df.iloc[index]
-
-        image_paths = entry["image_path"]
-        extrinsics = torch.Tensor(entry["extrinsic"])
-        intrinsics = torch.Tensor(entry["intrinsic"])
-
-        #convert poses to be relative to first frame in sequence
-        chunk_origin = closed_form_inverse_se3(extrinsics[None,0]).squeeze(0)
-        extrinsics = chunk_origin @ extrinsics
-
-        #Transform and stack images
-        images = load_and_preprocess_images(image_paths)
-
-        return images, extrinsics[:,:3,:4], intrinsics
-
-    def __len__(self):
-        return len(self.df)
-
-class KITTIOdometryDataModuleOld(L.LightningDataModule):
-    def __init__(
-        self,
-        data_dir: str,
-        samplingMode: str,
-        batch_size: int = 1,
-        num_workers: int = 0,
-        pin_memory: bool = False,
-    ):
-        super().__init__()
-        self.save_hyperparameters()
-        self.train_sequence_ids = ["04","01", "02", "05", "06", "07", "08", "09","10"]
-        self.val_sequence_ids = ["03", "00"]
-        #self.predict_sequence_ids = ["05"]
-        #self.test_sequence_ids = ["05"]
-
-    def setup(self, stage):
-        if stage == "fit":
-            self.train_dataset = KITTIOdometryDatasetOld(
-                self.hparams.data_dir,
-                self.hparams.samplingMode,
-                sequence_ids=self.train_sequence_ids,
-            )
-            self.val_dataset = KITTIOdometryDatasetOld(
-                self.hparams.data_dir,
-                self.hparams.samplingMode,
-                sequence_ids=self.val_sequence_ids,
-            )
-        elif stage == "validate":
-            self.val_dataset = KITTIOdometryDatasetOld(
-                self.hparams.data_dir,
-                self.hparams.samplingMode,
-                sequence_ids=self.val_sequence_ids,
-            )
-        """
-        elif stage == "test":
-            self.test_dataset = KITTIOdometryDatasetOld(
-                self.hparams.data_dir,
-                sequence_ids=self.predict_sequence_ids,
-                transform=self.transform,
-            )
-        elif stage == "predict":
-            self.predict_dataset = KITTIOdometryDatasetOld(
-                self.hparams.data_dir,
-                sequence_ids=self.predict_sequence_ids,
-                transform=self.transform,
-            )
-        """
-
-    def train_dataloader(self):
-        return torch.utils.data.DataLoader(
-            self.train_dataset,
-            batch_size=self.hparams.batch_size,
-            shuffle=False,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
-        )
-
-    def val_dataloader(self):
-        return torch.utils.data.DataLoader(
-            self.val_dataset,
-            batch_size=self.hparams.batch_size,
-            shuffle=False,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
-        )
-    
-    """
-    def test_dataloader(self):
-        return torch.utils.data.DataLoader(
-            self.predict_dataset,
-            batch_size=self.hparams.batch_size,
-            shuffle=False,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
-        )
-
-    def predict_dataloader(self):
-        return torch.utils.data.DataLoader(
-            self.predict_dataset,
-            batch_size=self.hparams.batch_size,
-            shuffle=False,
-            num_workers=self.hparams.num_workers,
-            pin_memory=self.hparams.pin_memory,
-        )
-    """
 
 class DynamicDataModule(L.LightningDataModule):
     def __init__(
@@ -388,14 +204,6 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
             )
 
         self.save_hyperparameters()
-        
-
-    #NOT REQUIRED ANYMORE INSTEAD RELOAD DATALOADER EVERY EPOCH
-    #Required since by default, set_epoch() is only called on distributed sampler and not on our custom batch sampler
-    #def on_train_epoch_start(self):
-    #   self.trainer.train_dataloader.batch_sampler.set_epoch(self.trainer.current_epoch)
-    #def on_validation_epoch_start(self):
-    #   self.trainer.val_dataloaders.batch_sampler.set_epoch(self.trainer.current_epoch)
 
     def training_step(self, batch, batch_idx):
         #print(f"\nTrain IDS: {batch['ids']}")
@@ -452,15 +260,6 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
     def test_step(self, batch, batch_idx):
         predictions = self.forward(batch)
 
-        #compute loss
-        #loss_dict = self.loss(predictions,batch,self.trainer.global_step)
-        
-        #log losses
-        #for key in loss_dict.keys():
-        #   self.log(f"val/{key}", loss_dict[key], sync_dist=True)
-
-        #loss = loss_dict["objective"]
-        
         batch_metrics_dict, seq_metrics_dict = self.metrics(predictions, batch, self.model, self.trainer)
 
         #log metrics
@@ -477,15 +276,6 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
 
         #TODO handle case when we have no batch dim
         B, S, _, _, _ = batch['images'].shape
-
-        #sample random sequence width
-        """
-        #calculate max chunk_width, so that we have at least two full chunks
-        rev_chunk_widths = np.arange(self.chunk_width[0],self.chunk_width[1]+1)[::-1]
-        valid_chunk_widths = (S / (rev_chunk_widths - self.num_overlap)) >= 2
-        max_chunk_width = rev_chunk_widths[np.argmax(valid_chunk_widths)]
-        random_chunk_width = np.random.randint(self.chunk_width[0],max_chunk_width+1)
-        """
 
         if self.training:
             chunk_width = self.train_chunk_width
@@ -524,13 +314,11 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
         last_chunk_outputs = None
         for i in range(len(indices)):
             gt_poses = chunked_batch["extrinsics"][i] if sample_mode == "chunk_gt" or sample_mode == "two_chunks" else None
-            predictions = self.model(chunked_batch['images'][i],random_overlap,last_chunk_outputs,True,gt_poses=gt_poses)
+            predictions = self.model(chunked_batch['images'][i],random_overlap,last_chunk_outputs,gt_poses=gt_poses)
 
             last_chunk_outputs = predictions
         
         #perform alignment if necessary and convert to tensors
-        #only align during val or testing (since we want network to learn scale/pose alignment)
-        #self.hparams.cfg.gt_alignment_type if not self.training else ""
         alignAndConvertOutputs(predictions,batch,chunked_batch,self.hparams.cfg.gt_alignment_type, self.train_chunk_width, 0 if self.training else random_overlap)
 
         return predictions
@@ -541,13 +329,9 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
         max_lr = self.optim_cfg.options.lr.max_value
         min_lr = self.optim_cfg.options.lr.min_value
         linear_steps_percent = self.optim_cfg.options.lr.linear_steps
-        #weight_decay = self.optim_cfg.options.weight_decay.value #is constant in default vggt config
-        
-        #VGGT uses adamw with lr of 0.0002 for 160k iterations (iteration = one batch applied to model) in total
+
         named_parameters = dict(self.model.named_parameters())
-        #print(named_parameters)
         optimizer = instantiate(self.optim_cfg.optimizer, named_parameters.values())
-        #optimizer = torch.optim.AdamW(self.camera_head.parameters(), lr=max_lr, weight_decay=weight_decay)
         
         #Compute total number of iterations. Adapted from here https://github.com/Lightning-AI/pytorch-lightning/issues/5449
         self.trainer.fit_loop.setup_data()
@@ -559,12 +343,10 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
             iterations = dataset_size * self.trainer.max_epochs // self.trainer.accumulate_grad_batches
 
         warmup_iterations = int(max(linear_steps_percent * iterations,1.0))
-        #warmup_epochs = int(warmup_iterations // dataset_size)
         
         #Also employ cosine lr scheduler with warmup of 8k iterations (5% of total)
-        #scheduler = LinearWarmupCosineAnnealingLR(optimizer,warmup_epochs,self.trainer.max_epochs) #based on epochs
         warmup = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: (min((step + 1) / warmup_iterations, 1.0) * (max_lr - min_lr) + min_lr) / max_lr)
-        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, iterations, eta_min=min_lr) #torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, iterations / 8)
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, iterations, eta_min=min_lr)
         scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_iterations])
         
         return {'optimizer': optimizer, 'lr_scheduler': {'scheduler': scheduler, 'interval': 'step'}}
@@ -576,14 +358,6 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
         if f"grad_{norm_type}_norm_total" in norms:
             if self.trainer.is_global_zero:
                 self.log(f"grad_{norm_type}_norm_total",norms[f"grad_{norm_type}_norm_total"],rank_zero_only=True)
-
-    """
-    def on_after_backward(self):
-        for name,p in self.named_parameters():
-            if p.grad is None:
-                print(name)
-        print("on_before_opt exit")
-    """
 
     def _load_model_checkpoint(self, ckpt_path: str, fallback_ckpt_path: str = None):
         """Loads state dict of checkpoint from the given path."""
@@ -642,16 +416,15 @@ def main():
     if cfg.mode == "test":
         tags.append("results")
 
-    wandb_logger = WandbLogger(project=cfg.project_name, name=cfg.exp_name, save_dir=cfg.logging.log_dir, tags=tags)
+    logger = CSVLogger(save_dir=os.fspath(cfg.logging.log_dir), name=cfg.exp_name, version=None)
     lr_monitor = LearningRateMonitor(logging_interval='step')
-    #logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
-
+    
     #setup checkpointing
     last_ckpt_save_path = None
     resume_ckpt_path = None
     save_last = None
     if cfg.checkpoint.resume_from_checkpoint:
-        last_ckpt_save_dir = f"{os.fspath(cfg.logging.log_dir)}/{cfg.project_name}/_latest_checkpoints"
+        last_ckpt_save_dir = f"{os.fspath(cfg.logging.log_dir)}/_latest_checkpoints"
 
         if not os.path.exists(last_ckpt_save_dir):
             os.makedirs(last_ckpt_save_dir, exist_ok=True)
@@ -663,14 +436,13 @@ def main():
 
         save_last = 'link'
     
-    checkpoint_callback = CustomModelCheckpoint(every_n_train_steps = cfg.checkpoint.save_freq, save_on_train_epoch_end=False, last_ckpt_path=last_ckpt_save_path, save_last=save_last)#, )#, #save_last=True, save_top_k=1, monitor="step", mode="max", 
+    checkpoint_callback = CustomModelCheckpoint(every_n_train_steps = cfg.checkpoint.save_freq, save_on_train_epoch_end=False, last_ckpt_path=last_ckpt_save_path, save_last=save_last)
     
     #init model
     model = LitModel(cfg)
 
     #setup trainer
-    #deterministic=True, DDPStrategy(find_unused_parameters=True)
-    trainer = L.Trainer(devices=args.num_devices, num_nodes=args.num_nodes, strategy="ddp", use_distributed_sampler=False, max_steps=cfg.max_steps, logger=wandb_logger, log_every_n_steps=cfg.logging.log_freq, gradient_clip_val=cfg.optim.gradient_clip.max_norm, callbacks=[lr_monitor,checkpoint_callback,StepProgressBar()], check_val_every_n_epoch=None, val_check_interval=cfg.val_epoch_freq, limit_test_batches=1, limit_val_batches=1, reload_dataloaders_every_n_epochs=1, accumulate_grad_batches=cfg.accum_steps, precision=cfg.optim.amp.amp_dtype)
+    trainer = L.Trainer(devices=args.num_devices, num_nodes=args.num_nodes, strategy="ddp", use_distributed_sampler=False, max_steps=cfg.max_steps, logger=logger, log_every_n_steps=cfg.logging.log_freq, gradient_clip_val=cfg.optim.gradient_clip.max_norm, callbacks=[lr_monitor,checkpoint_callback,StepProgressBar()], check_val_every_n_epoch=None, val_check_interval=cfg.val_epoch_freq, limit_test_batches=1, limit_val_batches=1, reload_dataloaders_every_n_epochs=1, accumulate_grad_batches=cfg.accum_steps, precision=cfg.optim.amp.amp_dtype)
     
     #set seed
     seed_value = (cfg.seed_value + trainer.global_rank) * cfg.max_steps
@@ -687,9 +459,6 @@ def main():
         trainer.test(model=model,datamodule=datamodule)
     else:
         raise Exception("Unknown mode")
-    #trainer.save_checkpoint("models/baseVGGT.ckpt")
-
-    wandb.finish()
     
 if __name__ == "__main__":
     main()

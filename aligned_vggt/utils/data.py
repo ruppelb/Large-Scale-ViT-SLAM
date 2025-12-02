@@ -1,7 +1,7 @@
 import torch
 import random
-from vggt.utils.rotation import quat_to_mat, mat_to_quat
-from aligned_vggt.utils.alignment import * #per_chunk_scale_alignment_from_poses, scale_alignment_from_poses, apply_sim3_alignment_on_dict, umeyama_alignment_from_poses, umeyama_alignment_from_points
+from vggt.vggt.utils.rotation import quat_to_mat, mat_to_quat
+from aligned_vggt.utils.alignment import *
 
 
 def extri_to_pose_encoding(
@@ -89,7 +89,6 @@ def alignAndConvertOutputs(predictions, batch, chunked_batch, alignment_type, se
             per_chunk_scale_alignment_from_poses(predictions,chunked_batch)
             convertDictListsToTensors(chunked_batch,overlap,batch)
             convertDictListsToTensors(predictions,overlap)
-            #scale_alignment_from_poses(predictions,batch) #final full scale alignment
         else:
             convertDictListsToTensors(chunked_batch,overlap,batch)
             convertDictListsToTensors(predictions,overlap)
@@ -112,24 +111,7 @@ def alignAndConvertOutputs(predictions, batch, chunked_batch, alignment_type, se
                 scale_align_from_depths(predictions,batch)
             else:
                 #no alignment
-                #pass
-                
-                #if network outputs global scale, apply here
-                if "global_scales" in predictions:
-                    B = batch["extrinsics"].shape[0]
-                    for b in range(B):
-                        batch_scale = predictions["global_scales"][b].to(predictions["pose_enc_list"][-1])
-
-                        #inplace operations
-                        predictions["pose_enc_list"][-1][b,:,:3] *= batch_scale
-
-                        if "depth" in predictions:
-                            predictions["depth"][b,...] *= batch_scale
-
-                        if "world_points" in predictions:
-                            predictions["world_points"][b,...] *= batch_scale
-
-                    predictions["pose_enc"] = predictions["pose_enc_list"][-1]
+                pass
                 
 
 
@@ -167,9 +149,6 @@ def generate_chunks(num_frames, mode, seq_width, overlap):
         elif num_frames == 2:
             indices = [[0,1]]
         else:
-            #mid_point = num_frames // 2
-            #indices = [list(range(0, mid_point)), list(range(mid_point, num_frames))]
-            #random sample two non-overlapping sets from num_frames
             all_indices = list(range(num_frames))
             first_chunk_size = random.randint(1, num_frames - 1)
             first_chunk = random.sample(all_indices, first_chunk_size)
@@ -187,15 +166,3 @@ def chunk_batch(batch, indices):
             if isinstance(batch[key], torch.Tensor):
                 chunked_batch.setdefault(key,[]).append(batch[key][:,chunk_ids])
     return chunked_batch
-
-"""
-#generate chunk indices      
-indices = [] 
-for i in range(0, S - self.seq_width + 1, self.seq_width - self.num_overlap):
-    indices.append(list(range(i,i+self.seq_width)))
-    
-#check if all images are at least within one sequence  
-if len(indices) * (self.seq_width - self.num_overlap) < S - self.num_overlap:
-    #create a subsequence with the last images
-    indices.append(list(range(len(indices) * (self.seq_width - self.num_overlap), S)))
-"""

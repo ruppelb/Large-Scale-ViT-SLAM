@@ -5,8 +5,8 @@ import glob
 
 import numpy as np
 
-from training.data.dataset_util import *
-from training.data.base_dataset import BaseDataset
+from vggt.training.data.dataset_util import *
+from vggt.training.data.base_dataset import BaseDataset
 
 class WaymoDataset(BaseDataset):
     def __init__(

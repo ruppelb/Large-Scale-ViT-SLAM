@@ -2,9 +2,8 @@ defaults:
   - default_dataset.yaml
   - _self_
 
-#project_name: Aligned_VGGT
-#exp_name: wrappedVGGT_vkitti_sampleMode[chunkOverlap]_chunkWidth[75]_overlap[30]_icAlignment[Sim3]_gtAlignment[scaleFromPoses]
-#tags: ["vkitti"]
+
+exp_name: test_pointAlignedWrappedVGGT_vkitti
 img_size: 518
 num_workers: 2
 seed_value: 42
@@ -41,7 +40,7 @@ data:
           settings: ["clone", "fog", "morning", "overcast", "rain", "sunset"]
 
 logging:
-  log_dir: models
+  log_dir: logs
   log_visuals: False
   log_freq: 10
 

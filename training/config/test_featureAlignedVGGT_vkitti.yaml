@@ -2,9 +2,7 @@ defaults:
   - default_dataset.yaml
   - _self_
 
-#project_name: Aligned_VGGT
-#exp_name: offsetVGGT_vkitti_model[vmjbanai]_sampleMode[chunkOverlap]_chunkWidth[5]_overlap[1]_icAlignment[ChunkSim3+FrameSe3]_gtAlignment[scaleFromPoses]
-#tags: ["vkitti"]
+exp_name: test_featureAlignedVGGT_vkitti
 img_size: 518
 num_workers: 2
 seed_value: 42
@@ -41,7 +39,7 @@ data:
           settings: ["clone", "fog", "morning", "overcast", "rain", "sunset"]
 
 logging:
-  log_dir: models
+  log_dir: logs
   log_visuals: False
   log_freq: 10
 

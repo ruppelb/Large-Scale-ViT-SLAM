@@ -3,15 +3,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
-from typing import Optional, Tuple, Union, List, Dict, Any
+from typing import Tuple, List
 
-from vggt.layers.block import Block
-from vggt.layers import Mlp
+from vggt.vggt.layers.block import Block
+from vggt.vggt.layers import Mlp
 
 from aligned_vggt.layers.cross_attention import CrossAttentionBlock
 from aligned_vggt.layers.rope import RotaryPositionEmbedding
 from aligned_vggt.layers.gated_update import GatedUpdate
-from vggt.layers.rope import RotaryPositionEmbedding2D, PositionGetter
+from vggt.vggt.layers.rope import RotaryPositionEmbedding2D, PositionGetter
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class AlignmentHead(nn.Module):
         in_dim=2048, #higher than in aggregator since frame and global attention outputs are concatenated
         embed_dim = 1024,
         dec_dim = 512,
-        depth_aa=4, #TODO test around what works best
+        depth_aa=4,
         depth_decoder=2,
         num_heads= 8, #scale aggregator uses half of this
         mlp_ratio=4.0,
@@ -112,9 +112,7 @@ class AlignmentHead(nn.Module):
                 ]
             )
         else:
-            
-            aa_order=["frame"]
-            """
+        
             aa_order=["frame", "global"]
             self.global_blocks = nn.ModuleList(
                 [
@@ -132,8 +130,6 @@ class AlignmentHead(nn.Module):
                     for _ in range(depth_aa)
                 ]
             )
-            """
-            pass
 
         
         self.chunk_cross_blocks = nn.ModuleList(
@@ -200,7 +196,7 @@ class AlignmentHead(nn.Module):
         nn.init.normal_(self.per_frame_pose_token, std=1e-6)
 
         if self.num_global_tokens > 0:
-            self.memory_token = nn.Parameter(torch.empty(1, num_global_tokens, dec_dim)) #nn.Parameter(torch.randn(1, num_global_tokens, embed_dim))
+            self.memory_token = nn.Parameter(torch.empty(1, num_global_tokens, dec_dim))
             nn.init.orthogonal_(self.memory_token[0]) #avoid early collapse
             self.memory_token.data = F.normalize(self.memory_token.data, dim=-1) # ensures unit norm
 
@@ -232,7 +228,6 @@ class AlignmentHead(nn.Module):
         if overlap_tokens is not None:
             #1+p, since cross tokens already have pose token
             assert overlap_tokens.shape[0] == B and overlap_tokens.shape[2]==1 + P and overlap_tokens.shape[3]==C, "Size of tokens and overlap tokens must match"
-            #assert overlap_tokens.shape[1] == (num_overlap+1), "Number of overlap tokens per batch has to match num_overlap"
 
             T = overlap_tokens.shape[1] #previous overlap + first token
 
@@ -250,7 +245,7 @@ class AlignmentHead(nn.Module):
             first_chunk = True
 
         #prepare pose tokens
-        pose_token = slice_expand_and_flatten(self.per_frame_pose_token,B,S) #self.per_frame_pose_token.expand(B, S, *self.per_frame_pose_token.shape[2:])
+        pose_token = slice_expand_and_flatten(self.per_frame_pose_token,B,S)
         tokens = torch.cat([pose_token, tokens], dim=2)
 
         # update P because we added special tokens
@@ -262,16 +257,12 @@ class AlignmentHead(nn.Module):
             if self.temporal_attention:
                 seq_ids = torch.arange(S,device=tokens.device)
                 if overlap_tokens is not None:
-                    
-                    #cross_ids = torch.arange(num_overlap,device=tokens.device)
-                    #pos1d_temporal = cross_ids.view(1, num_overlap).expand(B * P, -1), seq_ids.view(1, S).expand(B * P, -1)
                     att_ids = seq_ids + (S-(T-1))
                     cross_ids = torch.cat([seq_ids[:1],seq_ids[-(T-1):]])
                     pos_temporal = att_ids.view(1, S).expand(B * P, -1), cross_ids.view(1, T).expand(B * P, -1)
                 else:
                     pos_temporal = seq_ids.view(1, S).expand(B * P, -1), seq_ids.view(1, S).expand(B * P, -1)
             else:
-                """
                 if self.rope2d is not None:
                     if overlap_tokens is not None:
                         pos_temporal = self.position_getter(B * (S+T), H // self.patch_size, W // self.patch_size, device=tokens.device)
@@ -284,8 +275,6 @@ class AlignmentHead(nn.Module):
                         pos_temporal = pos_temporal + 1
                         pos_temporal_special = torch.zeros(pos_temporal.shape[0], self.patch_start_idx, 2).to(tokens.device).to(pos_temporal.dtype)
                         pos_temporal = torch.cat([pos_temporal_special, pos_temporal], dim=1)
-                """
-                pass
 
 
         #2d pose enc (only needed for tokens)
@@ -328,16 +317,10 @@ class AlignmentHead(nn.Module):
         tokens = tokens.view(B,S,P,C)
         per_frame_pose_tokens = tokens[..., 0, :]
         
-        with torch.amp.autocast("cuda", enabled=False): #with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast("cuda", enabled=False):
             chunk_pose_encs, frame_pose_encs, memory_tokens = self._aggregate_and_decode_pose(per_frame_pose_tokens, next_num_overlap, first_chunk, memory_tokens=memory_tokens)
         
-        #new_overlap_tokens = tokens[:, -num_overlap:].contiguous()
         new_overlap_tokens = torch.cat([tokens[:,:1] , tokens[:, -next_num_overlap:]],dim=1)
-
-        #replace scale token with context enriched scale token from decoder
-        #first_frame_token, frame_tokens
-        #new_overlap_tokens[:,:1,0] = first_frame_token
-        #new_overlap_tokens[:,-next_num_overlap:,0] = frame_tokens[:,-next_num_overlap:]
         
         return chunk_pose_encs, frame_pose_encs, memory_tokens, new_overlap_tokens.contiguous() #only return processed overlap tokens
         
@@ -372,9 +355,6 @@ class AlignmentHead(nn.Module):
         if cross_tokens is not None:
             if cross_tokens.shape != (B * P, T, C):
                 cross_tokens = cross_tokens.view(B, T, P, C).view(B * P, T, C)
-
-            #append tokens to cross tokens for time-aware cross and self attention
-            #cross_tokens = torch.cat((cross_tokens,tokens),dim=1)
         else:
             #only do time-aware self attention
             cross_tokens = tokens
@@ -430,16 +410,6 @@ class AlignmentHead(nn.Module):
         per_frame_scale_tokens: tensor (B,S,embed_dim)
         """
         B,S,C = frame_pose_tokens.shape
-
-        """
-        #positional embedding for pose aggregator
-        pos1d_pose = None
-        if self.rope1d is not None:
-            seq_ids = torch.arange((S),device=frame_pose_tokens.device) #add one for chunk pose token
-            pos1d_pose = seq_ids.view(1, S).expand(B, -1)
-            #seq_ids = torch.cat([torch.zeros(1,device=tokens.device,dtype=seq_ids.dtype), seq_ids + S]) #shift tokens and add 0 position for global token, so we have a larger distance between tokens
-            #pos1d_pose = seq_ids.view(1, (S+1)).expand(B, -1)
-        """
 
         if not self.simple_decoder:
             pos1d_frame_cross = None
@@ -535,13 +505,10 @@ class AlignmentHead(nn.Module):
             #inform frame tokens over chunk pose alignment
             frame_tokens = tokens[:,1:]
 
-            #frame dropout (for now avoid dropping overlapping frames since we mostly only use one TODO: add overlap with higher prob on overlapping frames)
-            #avoid dropout for first chunks in sequence and first frame in general
+            #frame dropout (avoid dropping overlapping frames, avoid dropout for first chunks in sequence and first frame in general)
             if self.training and self.drop_prob_nonoverlap > 0.0 and not is_first_chunk and (S-1-num_overlap) > 1:
-                #first_frame_mask = torch.ones((B, 1, 1), device=tokens.device)
                 non_overlap_mask = (torch.rand(B, S-1-num_overlap, device=tokens.device) > self.drop_prob_nonoverlap).float().unsqueeze(-1) #B, S-num_overlap, 1
                 overlap_mask = torch.ones((B, num_overlap, 1), device=tokens.device)
-                #mask = torch.cat((first_frame_mask,non_overlap_mask,overlap_mask),dim=1)
                 mask = torch.cat((non_overlap_mask,overlap_mask),dim=1)
 
                 scale = 1.0 / (1.0 - self.drop_prob_nonoverlap) #rescale so expected value remains the same
@@ -550,7 +517,6 @@ class AlignmentHead(nn.Module):
             else:
                 frame_tokens = frame_tokens
 
-            
             frame_cross_idx = 0
             for _ in range(self.depth_decoder):
                 if self.training:

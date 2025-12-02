@@ -7,17 +7,16 @@
 import time
 import torch
 import torch.nn as nn
-from typing import Optional, Tuple, Dict
 from huggingface_hub import PyTorchModelHubMixin  # used for model hub
 
-from vggt.models.aggregator import Aggregator
-from vggt.heads.camera_head import CameraHead
-from vggt.heads.dpt_head import DPTHead
-from vggt.heads.track_head import TrackHead
+from vggt.vggt.models.aggregator import Aggregator
+from vggt.vggt.heads.camera_head import CameraHead
+from vggt.vggt.heads.dpt_head import DPTHead
+from vggt.vggt.heads.track_head import TrackHead
 
-from vggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
-from vggt.utils.rotation import quat_to_mat, mat_to_quat
-from vggt.utils.geometry import closed_form_inverse_se3
+from vggt.vggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
+from vggt.vggt.utils.rotation import quat_to_mat, mat_to_quat
+from vggt.vggt.utils.geometry import closed_form_inverse_se3
 
 from aligned_vggt.utils.alignment import scale_lse_solver
 
@@ -45,7 +44,7 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         self.depth_head = self.depth_head if cfg.enable_depth else None
         self.track_head = self.track_head if cfg.enable_track else None
 
-    def forward(self, images: torch.Tensor, num_overlap, context : dict = None, mergeResults : bool = False, gt_poses : torch.Tensor =None):
+    def forward(self, images: torch.Tensor, num_overlap, context : dict = None, gt_poses : torch.Tensor =None):
         #context is a dict with lists or None for the first chunk
 
         B, S, C, H, W = images.shape
@@ -95,16 +94,11 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
                     predictions["pose_enc"] = [pose_enc_list[-1]]  # pose encoding of the last iteration
                     predictions["pose_enc_list"] = [pose_enc_list]
                 else:
-
-                    if mergeResults:
-                        #pose_enc_list = merge_results(context_pose_enc_list, pose_enc_list, self.num_overlap)
-                        context.setdefault("pose_enc", []).append(pose_enc_list[-1])
-                        predictions["pose_enc"] = context["pose_enc"]
-                        context.setdefault("pose_enc_list", []).append(pose_enc_list)
-                        predictions["pose_enc_list"] = context["pose_enc_list"]
-                    else:
-                        predictions["pose_enc"] = [pose_enc_list[-1]]  # pose encoding of the last iteration
-                        predictions["pose_enc_list"] = [pose_enc_list]
+                    #pose_enc_list = merge_results(context_pose_enc_list, pose_enc_list, self.num_overlap)
+                    context.setdefault("pose_enc", []).append(pose_enc_list[-1])
+                    predictions["pose_enc"] = context["pose_enc"]
+                    context.setdefault("pose_enc_list", []).append(pose_enc_list)
+                    predictions["pose_enc_list"] = context["pose_enc_list"]
 
 
             if self.depth_head is not None:
@@ -121,17 +115,12 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
                     predictions["depth"] = [depth]
                     predictions["depth_conf"] = [depth_conf]
                 else:
-
                     #no need to align depth maps, since they are already aligned by the alignment head
+                    context.setdefault("depth", []).append(depth)
+                    predictions["depth"] = context["depth"]
+                    context.setdefault("depth_conf", []).append(depth_conf)
+                    predictions["depth_conf"] = context["depth_conf"]
 
-                    if mergeResults:
-                        context.setdefault("depth", []).append(depth)
-                        predictions["depth"] = context["depth"]
-                        context.setdefault("depth_conf", []).append(depth_conf)
-                        predictions["depth_conf"] = context["depth_conf"]
-                    else:
-                        predictions["depth"] = [depth]
-                        predictions["depth_conf"] = [depth_conf]
 
             if self.point_head is not None:
                 pts3d, pts3d_conf = self.point_head(
@@ -169,19 +158,11 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
                     predictions["world_points"] = [pts3d]
                     predictions["world_points_conf"] = [pts3d_conf]
                 else:
+                    context.setdefault("world_points", []).append(pts3d)
+                    predictions["world_points"] = context["world_points"]
+                    context.setdefault("world_points_conf", []).append(pts3d_conf)
+                    predictions["world_points_conf"] = context["world_points_conf"]
 
-                    #context_pts3d = context["world_points"][-1]
-                    #context_pts3d_conf = context["world_points_conf"][-1]
-
-                    if mergeResults:
-                        context.setdefault("world_points", []).append(pts3d)
-                        predictions["world_points"] = context["world_points"]
-                        context.setdefault("world_points_conf", []).append(pts3d_conf)
-                        predictions["world_points_conf"] = context["world_points_conf"]
-                    else:
-                        predictions["world_points"] = [pts3d]
-                        predictions["world_points_conf"] = [pts3d_conf]
-        
         return predictions
     
 
@@ -237,10 +218,9 @@ def align_poses(pose_enc, image_shape, num_overlap, context_pose_enc = None, gt_
             camera_transforms = inv_overlapping @ context_overlapping
 
             if num_overlap > 1:
-                #TODO: opt supply other methods for computing alignment pose with multiple overlapping frames
                 camera_transforms = extri_to_pose_encoding(camera_transforms)
 
-                mean_camera_transform = averagePoseEncodings(camera_transforms) #torch.mean(camera_transforms, dim=1, keepdim=True)  # Bx1x7
+                mean_camera_transform = averagePoseEncodings(camera_transforms) # Bx1x7
 
                 mean_camera_transform = pose_encoding_to_extri(mean_camera_transform) # Bx1x4x4
             else:
@@ -248,7 +228,7 @@ def align_poses(pose_enc, image_shape, num_overlap, context_pose_enc = None, gt_
     else:
         mean_camera_transform = torch.eye(4, device=extr.device, dtype=extr.dtype).view(1,1,4,4).expand(B,-1,-1,-1)
     
-    adjusted_extr = extr @ mean_camera_transform #extri_to_pose_encoding(sc_poses @ mean_camera_transform)
+    adjusted_extr = extr @ mean_camera_transform
 
     sc_adjusted_pose_enc = extri_intri_to_pose_encoding(adjusted_extr, intr, image_size_hw=image_shape)
 
@@ -322,65 +302,3 @@ def averagePoseEncodings(pose_encodings: torch.Tensor) -> torch.Tensor:
     avg_quat = max_eigvec / max_eigvec.norm(dim=-1, keepdim=True)
 
     return torch.cat([avg_translation, avg_quat.unsqueeze(1)], dim=-1).float()
-
-def merge_results(first_chunk, second_chunk, num_overlap = 0, mergeDim = 1):
-
-    #TODO: check if it rather makes sense selecting the overlapping frames from first or second chunk
-        #      ~ second chunk logically makes more sense since we get gradients to first chunk poses through alignment
-        #      Another idea: output both chunk results and apply loss over both of them
-
-    #sc_adjusted_pose_enc_list = sc_adjusted_pose_enc_list[:,:,self.num_overlap:]
-
-    if isinstance(first_chunk, list) and isinstance(second_chunk, list):
-
-        if num_overlap > 0:
-            #first_chunk = [item[:,:-num_overlap] for item in first_chunk]
-            second_chunk = [item[:,num_overlap:] for item in second_chunk]
-    
-        merged = [torch.cat((fc_item, sc_item), dim=mergeDim) for fc_item, sc_item in zip(first_chunk, second_chunk)]
-
-        first_chunk.clear()
-        second_chunk.clear()
-    else:
-        if num_overlap > 0:
-            #merged = torch.cat((first_chunk[:,:-num_overlap], second_chunk), dim=mergeDim)
-            #first_chunk = first_chunk[:,:-num_overlap]
-            second_chunk = second_chunk[:,num_overlap:]
-        
-        merged = torch.cat((first_chunk, second_chunk), dim=mergeDim)
-
-    del first_chunk
-    del second_chunk
-
-    return merged
-
-
-"""
-    P = len(context_pose_enc_list)
-    for i in range(P):
-        context_poses = pose_encoding_to_extri(context_pose_enc_list[i])
-        context_overlapping = context_poses[:, -self.num_overlap:] # BxN_overlapx4x4
-
-        extr, intr = pose_encoding_to_extri_intri(pose_enc_list[i],image_size_hw=images.shape[-2:])
-        extr = torch.nn.functional.pad(extr, (0,0,0,1,0,0,0,0), mode="constant")
-        extr[:,:, 3, 3] = 1.
-        overlapping = extr[:, :self.num_overlap]
-        inv_overlapping = closed_form_inverse_se3(overlapping.reshape(B*self.num_overlap,4,4)).reshape(B,self.num_overlap,4,4)
-        
-        camera_transforms = inv_overlapping @ context_overlapping
-
-        if self.num_overlap > 1:
-            #TODO: opt supply other methods for computing alignment pose with multiple overlapping frames
-            camera_transforms = extri_to_pose_encoding(camera_transforms)
-
-            mean_camera_transform = averagePoseEncodings(camera_transforms) #torch.mean(camera_transforms, dim=1, keepdim=True)  # Bx1x7
-
-            mean_camera_transform = pose_encoding_to_extri(mean_camera_transform) # Bx1x4x4
-        else:
-            mean_camera_transform = camera_transforms
-        
-        adjusted_extr = extr @ mean_camera_transform #extri_to_pose_encoding(sc_poses @ mean_camera_transform)
-
-        sc_adjusted_pose_enc = extri_intri_to_pose_encoding(adjusted_extr, intr, image_size_hw=images.shape[-2:])
-        pose_enc_list[i] = sc_adjusted_pose_enc
-    """

@@ -4,18 +4,14 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import random
 import torch
-import torch.nn.functional as F
 
 from dataclasses import dataclass
-from vggt.utils.pose_enc import extri_intri_to_pose_encoding,pose_encoding_to_extri_intri
-from vggt.utils.rotation import quat_to_mat, mat_to_quat
-from vggt.utils.geometry import closed_form_inverse_se3
-from train_utils.general import check_and_fix_inf_nan
+from vggt.vggt.utils.pose_enc import extri_intri_to_pose_encoding,pose_encoding_to_extri_intri
+from vggt.vggt.utils.rotation import mat_to_quat
+from vggt.training.train_utils.general import check_and_fix_inf_nan
 from math import ceil, floor
-from aligned_vggt.utils.geometry import unproject_depth_map_to_point_map, project_world_points_to_pixels, generate_3D_pixel_grid, compute_relative_poses
-from aligned_vggt.utils.alignment import scale_lse_solver
+from aligned_vggt.utils.geometry import compute_relative_poses
 
 @dataclass(eq=False)
 class MultitaskLoss(torch.nn.Module):

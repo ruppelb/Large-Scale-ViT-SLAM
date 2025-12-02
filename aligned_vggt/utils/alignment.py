@@ -1,7 +1,7 @@
 import numpy as np
 import torch
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri, extri_intri_to_pose_encoding
-from vggt.utils.geometry import closed_form_inverse_se3
+from vggt.vggt.utils.pose_enc import pose_encoding_to_extri_intri, extri_intri_to_pose_encoding
+from vggt.vggt.utils.geometry import closed_form_inverse_se3
 
 def umeyama(x,y):
     """

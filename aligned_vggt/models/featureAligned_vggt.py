@@ -1,27 +1,17 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
-import time
 import torch
 import torch.nn as nn
 from huggingface_hub import PyTorchModelHubMixin  # used for model hub
 
-from vggt.models.aggregator import Aggregator
-from vggt.heads.camera_head import CameraHead
-from vggt.heads.dpt_head import DPTHead
-from vggt.heads.track_head import TrackHead
+from vggt.vggt.models.aggregator import Aggregator
+from vggt.vggt.heads.camera_head import CameraHead
+from vggt.vggt.heads.dpt_head import DPTHead
+from vggt.vggt.heads.track_head import TrackHead
 
 from aligned_vggt.heads.alignment_head import AlignmentHead
-from aligned_vggt.utils.geometry import unproject_depth_map_to_point_map
 
-from vggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
-from vggt.utils.rotation import quat_to_mat, mat_to_quat
-from vggt.utils.geometry import closed_form_inverse_se3
-
-
+from vggt.vggt.utils.pose_enc import extri_intri_to_pose_encoding, pose_encoding_to_extri_intri
+from vggt.vggt.utils.rotation import quat_to_mat, mat_to_quat
+from vggt.vggt.utils.geometry import closed_form_inverse_se3
 
 class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
     def __init__(self, img_size=518, patch_size=14, embed_dim=1024,
@@ -42,8 +32,6 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
 
         self.alignment_head = AlignmentHead(in_dim=2*embed_dim,patch_size=patch_size,num_global_tokens= num_memory_tokens,temporal_attention=temporal_attention,simple_decoder=simple_decoder)
 
-        #self.global_scale_decoder = Mlp(in_features=2*embed_dim, hidden_features=embed_dim, out_features=1, drop=0)
-
     def set_config(self, cfg: dict):
         #only called after we load the model from PyTorchModelHubMixin
         
@@ -56,7 +44,7 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
 
         self.alignment_head = AlignmentHead(in_dim=2*self.embed_dim,patch_size=cfg.patch_size,num_global_tokens = cfg.num_memory_tokens,temporal_attention=cfg.temporal_attention,simple_decoder=cfg.simple_decoder)
 
-    def forward(self, images: torch.Tensor, num_overlap, context : dict = None, mergeResults : bool = False,  gt_poses : torch.Tensor =None):
+    def forward(self, images: torch.Tensor, num_overlap, context : dict = None, gt_poses : torch.Tensor =None):
         #context is a dict with lists or None for the first chunk
 
         B, S, C, H, W = images.shape
@@ -69,9 +57,6 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
         aggregated_tokens_list.clear()
         del aggregated_tokens_list
         torch.cuda.empty_cache()
-
-        if not self.training:
-            start_time = time.time()
 
         #compute scale alignment based on last layer tokens
         context_overlap_tokens = None
@@ -94,24 +79,10 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
         
         per_frame_extr = torch.cat([chunk_alignment,frame_alignments],dim=1) #B,S,4,4
 
-        if not self.training:
-            if context is None:
-                predictions["alignment_module_inference_time"] = [time.time() - start_time]
-            else:
-                context.setdefault("alignment_module_inference_time", []).append(time.time() - start_time)
-                predictions["alignment_module_inference_time"] = context["alignment_module_inference_time"]
-
-        #decode global scale factor from global tokens
-        #mean_global_token = global_tokens.mean(dim=1) #B,embed_dim
-        #global_scales = self.global_scale_decoder(mean_global_token) #B,1
-
         #decode poses, depth, points maps, and tracks for each chunk seperately
         with torch.amp.autocast("cuda", enabled=False): #with torch.cuda.amp.autocast(enabled=False):
             if self.camera_head is not None:
                 pose_enc_list = self.camera_head(filtered_aggregated_tokens_list)
-
-                if not self.training:
-                    start_time = time.time()
 
                 #decode final vggt pose outputs
                 extr, intr = pose_encoding_to_extri_intri(pose_enc_list[-1],image_size_hw=images.shape[-2:]) #B,S,3,4
@@ -134,16 +105,11 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
                     else:
                         context_overlapping = pose_encoding_to_extri(context["pose_enc_list"][-1][-1][:, -overlap:]) # BxN_overlapx4x4
 
-                        #remove scale alignment of previous overlapping poses
-                        #context_overlapping_scales = context["scale_list"][-1][p][:,-self.num_overlap:].detach()
-                        #context_overlapping[:,:,:3,3] /= context_overlapping_scales
-
                         inv_overlapping = closed_form_inverse_se3(extr[:, :overlap].reshape(B*overlap,4,4)).reshape(B,overlap,4,4)
                         
                         camera_transforms = inv_overlapping @ context_overlapping
 
                         if overlap > 1:
-                            #TODO: opt supply other methods for computing alignment pose with multiple overlapping frames
                             camera_transforms = extri_to_pose_encoding(camera_transforms)
 
                             mean_camera_transform = averagePoseEncodings(camera_transforms) #torch.mean(camera_transforms, dim=1, keepdim=True)  # Bx1x7
@@ -156,13 +122,6 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
                     
                 per_frame_extr = torch.matmul(per_frame_extr, mean_camera_transform)
 
-                if not self.training:
-                    if context is None:
-                        predictions["alignment_computation_inference_time"] = [time.time() - start_time]
-                    else:
-                        context.setdefault("alignment_computation_inference_time", []).append(time.time() - start_time)
-                        predictions["alignment_computation_inference_time"] = context["alignment_computation_inference_time"]
-
                 #apply final pose alignment
                 aligned_extr = torch.matmul(extr, per_frame_extr)
                 
@@ -172,13 +131,11 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
 
                 #save dict keys
                 predictions["overlap_tokens"] = overlap_tokens
-                #predictions["global_scales"] = global_scales
 
                 if context is None:
                     predictions["pose_enc"] = [pose_enc_list[-1]]  # pose encoding of the last iteration
                     predictions["pose_enc_list"] = [pose_enc_list]
                     
-                    #predictions["per_chunk_pose_enc"] = chunk_pose_enc #list of B,7
                     predictions["per_chunk_pose_enc"] = chunk_pose_enc #tensor of B,1,7
                     predictions["per_frame_pose_enc"] = frame_pose_enc #tensor of B,S-1,7
 
@@ -191,7 +148,6 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
                     context.setdefault("pose_enc_list", []).append(pose_enc_list)
                     predictions["pose_enc_list"] = context["pose_enc_list"]
 
-                    #predictions["per_chunk_pose_enc"] = merge_results(context["per_chunk_pose_enc"], chunk_pose_enc, 0 , 0)
                     predictions["per_chunk_pose_enc"] = merge_results(context["per_chunk_pose_enc"], chunk_pose_enc, 0 , 1)
                     predictions["per_frame_pose_enc"] = merge_results(context["per_frame_pose_enc"], frame_pose_enc, 0 , 1)
                     
@@ -206,9 +162,6 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
                     filtered_aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
                 )
 
-                #TODO deproject depths to points, apply transform, project points to depths?
-                #points = unproject_depth_map_to_point_map(depth,)
-
                 #apply scale correction
                 depth *= chunk_scale.view(B,1,1,1,1)
 
@@ -221,18 +174,6 @@ class FeatureAlignedVGGT(nn.Module, PyTorchModelHubMixin):
                     predictions["depth"] = context["depth"]
                     context.setdefault("depth_conf", []).append(depth_conf)
                     predictions["depth_conf"] = context["depth_conf"]
-
-                    if self.training:
-                        #save pairs of overlapping depth maps for consistency loss
-                        depth_pairs = torch.stack((context["depth"][-1][:, -overlap:],depth[:, :overlap])) # (2, B, N_overlap, H, W, 1)
-                        depth_conf_pairs = torch.stack((context["depth_conf"][-1][:, -overlap:],depth_conf[:, :overlap])) # (2, B, N_overlap, H, W, 1)
-
-                        if "depth_pairs_ov" in context:
-                            predictions["depth_pairs_ov"] = merge_results(context["depth_pairs_ov"], depth_pairs, 0 , 1)
-                            predictions["depth_conf_pairs_ov"] = merge_results(context["depth_conf_pairs_ov"], depth_conf_pairs, 0 , 1)
-                        else:
-                            predictions["depth_pairs_ov"] = depth_pairs
-                            predictions["depth_conf_pairs_ov"] = depth_conf_pairs
                         
                         
 
@@ -360,26 +301,14 @@ def averagePoseEncodings(pose_encodings: torch.Tensor) -> torch.Tensor:
 
 def merge_results(first_chunk, second_chunk, num_overlap = 0, mergeDim = 1):
 
-    #TODO: check if it rather makes sense selecting the overlapping frames from first or second chunk
-        #      ~ second chunk logically makes more sense since we get gradients to first chunk poses through alignment
-        #      Another idea: output both chunk results and apply loss over both of them
-
-    #sc_adjusted_pose_enc_list = sc_adjusted_pose_enc_list[:,:,self.num_overlap:]
-
     if isinstance(first_chunk, list) and isinstance(second_chunk, list):
 
         if num_overlap > 0:
-            #first_chunk = [item[:,:-num_overlap] for item in first_chunk]
             second_chunk = [item[:,num_overlap:] for item in second_chunk]
     
         merged = [torch.cat((fc_item, sc_item), dim=mergeDim) for fc_item, sc_item in zip(first_chunk, second_chunk)]
-
-        #first_chunk.clear()
-        #second_chunk.clear()
     else:
         if num_overlap > 0:
-            #merged = torch.cat((first_chunk[:,:-num_overlap], second_chunk), dim=mergeDim)
-            #first_chunk = first_chunk[:,:-num_overlap]
             second_chunk = second_chunk[:,num_overlap:]
         
         merged = torch.cat((first_chunk, second_chunk), dim=mergeDim)

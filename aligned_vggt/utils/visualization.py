@@ -2,10 +2,9 @@ import os
 import glob
 import time
 import threading
-from typing import List, Optional
+from typing import List
 
 import numpy as np
-import torch
 from tqdm.auto import tqdm
 import viser
 import viser.transforms as viser_tf
@@ -13,21 +12,18 @@ import cv2
 import requests
 import copy
 
-
 try:
     import onnxruntime
 except ImportError:
     print("onnxruntime not found. Sky segmentation may not work.")
 
-from vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
+from vggt.vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
 
 def viser_wrapper(
     pred_dict: dict,
     port: int = 8080,
     init_conf_threshold: float = 50.0,  # represents percentage (e.g., 50 means filter lowest 50%)
     background_mode: bool = True,
-    #mask_sky: bool = False,
-    #image_folder: str = None,
 ):
     """
     Visualize predicted 3D points and camera poses with viser.
@@ -112,8 +108,6 @@ def viser_wrapper(
         gui_frame_selector = server.gui.add_dropdown(
             "Show Points from Frames", options=["All"] + [str(i) for i in range(S)], initial_value="All"
         )
-
-        
 
         # Create the main point cloud handle
         # Compute the threshold value as the given percentile
