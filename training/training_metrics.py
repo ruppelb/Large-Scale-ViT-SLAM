@@ -14,11 +14,11 @@ from hydra.utils import instantiate
 from dataclasses import dataclass
 from vggt.vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.vggt.utils.geometry import closed_form_inverse_se3
-from vggt.training.train_utils.normalization import normalize_camera_extrinsics_and_points_batch
+#from vggt.training.train_utils.normalization import normalize_camera_extrinsics_and_points_batch
 from aligned_vggt.utils.geometry import unproject_depth_map_to_point_map
 from aligned_vggt.utils.visualization import viser_wrapper
 
-from aligned_vggt.utils.data import alignAndConvertOutputs, generate_chunks, chunk_batch, moveDictListItemToCPU, pose_encoding_to_extri
+from aligned_vggt.utils.data import alignAndConvertOutputs, generate_chunks, chunk_batch, moveDictListItemToCPU, pose_encoding_to_extri, normalize_camera_extrinsics_and_points_batch
 
 @dataclass(eq=False)
 class Metrics(torch.nn.Module):

@@ -16,9 +16,9 @@ from lightning.pytorch.utilities import grad_norm
 from lightning.pytorch.loggers import CSVLogger
 
 from vggt.training.train_utils.freeze import freeze_modules
-from vggt.training.train_utils.normalization import normalize_camera_extrinsics_and_points_batch
+#from vggt.training.train_utils.normalization import normalize_camera_extrinsics_and_points_batch
 
-from aligned_vggt.utils.data import alignAndConvertOutputs, generate_chunks, chunk_batch
+from aligned_vggt.utils.data import alignAndConvertOutputs, generate_chunks, chunk_batch, normalize_camera_extrinsics_and_points_batch
 
 class StepProgressBar(TQDMProgressBar):
 
@@ -184,7 +184,7 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
             self.model = instantiate(cfg.model, _recursive_=False)
             self._load_model_checkpoint(cfg.checkpoint.model_checkpoint_path, cfg.checkpoint.fallback_checkpoint_path if "fallback_checkpoint_path" in cfg.checkpoint else None) #_load_from_state_dict(cfg.checkpoint.model_checkpoint_path)
         else:
-            self.model = instantiate({"_target_": cfg.model._target_}, _recursive_=False).from_pretrained(cfg.checkpoint.from_pretrained,cache_dir="models") #VGGT.from_pretrained("facebook/VGGT-1B" ,cache_dir="models")
+            self.model = instantiate({"_target_": cfg.model._target_}, _recursive_=False).from_pretrained(cfg.checkpoint.from_pretrained,cache_dir=cfg.checkpoint.save_dir) #VGGT.from_pretrained("facebook/VGGT-1B" ,cache_dir="models")
             self.model.set_config(cfg.model)
 
         #freeze modules
@@ -288,7 +288,7 @@ class LitModel(L.LightningModule, PyTorchModelHubMixin):
             
         #calculate width that at least one full chunk exists
         rev_chunk_widths = np.arange(chunk_width[1],chunk_width[0]-1, -1)
-        valid_chunk_widths = (S / rev_chunk_widths) >= 1
+        valid_chunk_widths = (S / rev_chunk_widths) > 1
         max_chunk_width = rev_chunk_widths[np.argmax(valid_chunk_widths)]
         random_chunk_width = np.random.randint(chunk_width[0],max_chunk_width+1)
 
@@ -424,7 +424,7 @@ def main():
     resume_ckpt_path = None
     save_last = None
     if cfg.checkpoint.resume_from_checkpoint:
-        last_ckpt_save_dir = f"{os.fspath(cfg.logging.log_dir)}/_latest_checkpoints"
+        last_ckpt_save_dir = f"{os.fspath(cfg.checkpoint.save_dir)}/_latest_checkpoints"
 
         if not os.path.exists(last_ckpt_save_dir):
             os.makedirs(last_ckpt_save_dir, exist_ok=True)
@@ -435,11 +435,14 @@ def main():
             resume_ckpt_path = last_ckpt_save_path
 
         save_last = 'link'
-    
-    checkpoint_callback = CustomModelCheckpoint(every_n_train_steps = cfg.checkpoint.save_freq, save_on_train_epoch_end=False, last_ckpt_path=last_ckpt_save_path, save_last=save_last)
+
+    checkpoint_callback = CustomModelCheckpoint(dirpath= f"{os.fspath(cfg.checkpoint.save_dir)}/{cfg.exp_name}", every_n_train_steps = cfg.checkpoint.save_freq, save_on_train_epoch_end=False, last_ckpt_path=last_ckpt_save_path, save_last=save_last)
     
     #init model
     model = LitModel(cfg)
+
+    #workaround so that we can use VGGT's worker_fn, since we do not use enviromment variables for saving rank info
+    os.environ['RANK'] = "0"
 
     #setup trainer
     trainer = L.Trainer(devices=args.num_devices, num_nodes=args.num_nodes, strategy="ddp", use_distributed_sampler=False, max_steps=cfg.max_steps, logger=logger, log_every_n_steps=cfg.logging.log_freq, gradient_clip_val=cfg.optim.gradient_clip.max_norm, callbacks=[lr_monitor,checkpoint_callback,StepProgressBar()], check_val_every_n_epoch=None, val_check_interval=cfg.val_epoch_freq, limit_test_batches=1, limit_val_batches=1, reload_dataloaders_every_n_epochs=1, accumulate_grad_batches=cfg.accum_steps, precision=cfg.optim.amp.amp_dtype)

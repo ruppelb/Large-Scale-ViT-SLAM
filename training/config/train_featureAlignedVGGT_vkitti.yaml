@@ -27,7 +27,7 @@ data:
       img_size: ${img_size}
       patch_size: ${patch_size}
       fix_aspect_ratio: 0.3
-      img_nums: [3,40]
+      img_nums: [4,40] #always set minimum one above min chunk_width, as we want to avoid processing single chunks
       
     dataset:
       _target_: vggt.training.data.composed_dataset.ComposedDataset
@@ -63,6 +63,7 @@ logging:
   log_freq: 10
 
 checkpoint:
+  save_dir: ckpt
   save_freq: 500
   resume_from_checkpoint: True
   from_pretrained: facebook/VGGT-1B

@@ -44,6 +44,7 @@ logging:
   log_freq: 10
 
 checkpoint:
+  save_dir: ckpt
   save_freq: 200
   resume_from_checkpoint: False
   from_pretrained: facebook/VGGT-1B
