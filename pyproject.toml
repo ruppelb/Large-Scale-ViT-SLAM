@@ -11,22 +11,17 @@ dependencies = [
     "einops",
     "safetensors",
     "opencv-python",
-]
-
-
-[project.optional-dependencies]
-demo = [
-    "gradio==5.17.1",
-    "viser==0.2.23",
-    "tqdm",
+    "lightning==2.5.1",
+    "pandas",
+    "torchmetrics",
     "hydra-core",
     "omegaconf",
-    "opencv-python",
-    "scipy",
     "onnxruntime",
-    "requests",
-    "trimesh",
+    "viser==0.2.23",
     "matplotlib",
+    "scipy",
+    "requests",
+    "wcmatch",
 ]
 
 # Using setuptools as the build backend
