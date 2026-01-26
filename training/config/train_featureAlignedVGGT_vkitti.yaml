@@ -34,7 +34,7 @@ data:
       dataset_configs:
         - _target_: datasets.vkitti.VKittiDataset
           split: train
-          VKitti_DIR: /home/stud/rupb/storage/group/dataset_mirrors/01_incoming/vkitti
+          VKitti_DIR: /home/stud/rupb/storage/group/dataset_mirrors/01_incoming/vkitti # add training dataset path here
           sequence_ids: ["02","06","18","20"]
 
   val:
@@ -53,7 +53,7 @@ data:
       dataset_configs:
         - _target_: datasets.vkitti.VKittiDataset
           split: test
-          VKitti_DIR: /home/stud/rupb/storage/group/dataset_mirrors/01_incoming/vkitti
+          VKitti_DIR: /home/stud/rupb/storage/group/dataset_mirrors/01_incoming/vkitti # add validation dataset path here
           sequence_ids: ["01"]
           settings: ["clone"]
 
@@ -65,7 +65,7 @@ logging:
 checkpoint:
   save_dir: ckpt
   save_freq: 500
-  resume_from_checkpoint: True
+  resume_from_checkpoint: True #indicates whether to resume training from the latest checkpoint in the save_dir if training is interrupted
   from_pretrained: facebook/VGGT-1B
   model_checkpoint_path: null
 

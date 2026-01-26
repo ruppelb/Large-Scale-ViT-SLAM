@@ -35,7 +35,7 @@ data:
       dataset_configs:
         - _target_: datasets.vkitti.VKittiDataset
           split: test
-          VKitti_DIR: /home/stud/rupb/storage/group/dataset_mirrors/01_incoming/vkitti
+          VKitti_DIR: /home/stud/rupb/storage/group/dataset_mirrors/01_incoming/vkitti # add dataset path here
           sequence_ids: ["01"]
           settings: ["clone", "fog", "morning", "overcast", "rain", "sunset"]
 
@@ -62,7 +62,7 @@ metrics:
   trajectory_metrics:
   - _target_: eval.trajectory_metrics.AbsoluteTrajectoryError
   - _target_: eval.trajectory_metrics.RelativePoseError
-  - _target_: eval.trajectory_metrics.ScaleConsistency
+  #- _target_: eval.trajectory_metrics.ScaleConsistency
   reconstruction_metrics:
   - _target_: eval.reconstruction_metrics.ChamferDistanceMetrics
   visualize: False
