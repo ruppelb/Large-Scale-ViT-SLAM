@@ -146,4 +146,3 @@ model:
   enable_track: False
   num_memory_tokens: 8
   temporal_attention: True
-  simple_decoder: False

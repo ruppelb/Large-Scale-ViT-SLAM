@@ -22,6 +22,7 @@ dependencies = [
     "scipy",
     "requests",
     "wcmatch",
+    "gradio",
 ]
 
 # Using setuptools as the build backend

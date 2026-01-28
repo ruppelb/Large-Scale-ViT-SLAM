@@ -9,16 +9,20 @@ from aligned_vggt.utils.alignment import *
 from vggt.training.train_utils.general import check_and_fix_inf_nan
 
 
-def extri_to_pose_encoding(
-    extrinsics
-):
-    # extrinsics: BxSx3x4
-    R = extrinsics[:, :, :3, :3]  # BxSx3x3
-    T = extrinsics[:, :, :3, 3]  # BxSx3
+def extri_to_pose_encoding(extrinsics: torch.Tensor) -> torch.Tensor:
+    """
+    Convert extrinsics to pose encoding (translation + quaternion).
+    Args:
+        extrinsics (torch.Tensor): shape (B, S, 3, 4)
+    Returns:
+        pose_encoding (torch.Tensor): shape (B, S, 7)
+    """
+    R = extrinsics[:, :, :3, :3]
+    T = extrinsics[:, :, :3, 3]
 
     quat = mat_to_quat(R)
 
-    #normalize just to be sure
+    # normalize to get valid rotation quaternion
     quat = quat / quat.norm(dim=-1, keepdim=True).clamp(min=1e-8)
 
     pose_encoding = torch.cat([T, quat], dim=-1).float()
@@ -26,14 +30,18 @@ def extri_to_pose_encoding(
     return pose_encoding
 
 
-def pose_encoding_to_extri(
-    pose_encoding
-): 
-    #pose enc: BxSx7
+def pose_encoding_to_extri(pose_encoding: torch.Tensor) -> torch.Tensor:
+    """
+    Convert pose encoding (translation + quaternion) to extrinsics.
+    Args:
+        pose_encoding (torch.Tensor): shape (B, S, 7)
+    Returns:
+        extrinsics (torch.Tensor): shape (B, S, 3, 4)
+    """
     T = pose_encoding[..., :3]
     quat = pose_encoding[..., 3:7]
 
-    #normalize just to be sure
+    # normalize to get valid rotation quaternion
     quat = quat / quat.norm(dim=-1, keepdim=True).clamp(min=1e-8)
 
     R = quat_to_mat(quat)
@@ -43,36 +51,49 @@ def pose_encoding_to_extri(
 
     return extrinsics
 
-def convertDictListsToTensors(chunked_dict, overlap, out_dict=None):
+def convertDictListsToTensors(chunked_dict: dict, overlap: int, out_dict: dict = None) -> None:
+    """
+    Convert lists in dict to tensors by concatenating along dimension 1.
+    If out_dict is provided, store results there, otherwise modify chunked_dict in place.
+    Args:
+        chunked_dict (dict): dictionary with lists of tensors to convert.
+        overlap (int): number of overlapping frames to omit from each chunk except the first.
+        out_dict (dict, optional): dictionary to store results. If None, modify chunked_dict in place.
+    Returns:
+        None (results are stored in out_dict or chunked_dict).
+    """
 
-        #convert dict lists (batch and gt) to tensors (if they are lists to begin with)
-        #if validating, remove double overlapping frames
-        if out_dict == None:
-            out_dict = chunked_dict
+    if out_dict == None:
+        out_dict = chunked_dict
 
-        keys_to_merge = ["pose_enc", "pose_enc_list", "world_points", "world_points_conf", "depth", "depth_conf", "extrinsics", "intrinsics", "scales", "cam_points", "depths", "point_masks", "images", "ids"]
+    keys_to_merge = ["pose_enc", "pose_enc_list", "world_points", "world_points_conf", "depth", "depth_conf", "extrinsics", "intrinsics", "scales", "cam_points", "depths", "point_masks", "images", "ids"]
 
-        for key in chunked_dict.keys():
-            if key in keys_to_merge:
-                if isinstance(chunked_dict[key][0],list):
-                    #pose encoding list
+    for key in chunked_dict.keys():
+        if key in keys_to_merge:
+            if isinstance(chunked_dict[key][0],list):
+                # pose encoding list
+                if overlap > 0:
+                    # omit overlapping frames
+                    for i in range(1,len(chunked_dict[key])):
+                        chunked_dict[key][i] = [item[:,overlap:] for item in chunked_dict[key][i]]
 
-                    if overlap > 0:
-                        #omit overlapping frames
-                        for i in range(1,len(chunked_dict[key])):
-                            chunked_dict[key][i] = [item[:,overlap:] for item in chunked_dict[key][i]]
+                out_dict[key] = [torch.cat(tensor_tuple, dim=1) for tensor_tuple in zip(*chunked_dict[key])]
+            else:
+                if overlap > 0:
+                    # omit overlapping frames
+                    for i in range(1,len(chunked_dict[key])):
+                        chunked_dict[key][i] = chunked_dict[key][i][:,overlap:]
 
-                    out_dict[key] = [torch.cat(tensor_tuple, dim=1) for tensor_tuple in zip(*chunked_dict[key])]
-                else:
+                out_dict[key] = torch.cat(chunked_dict[key],dim=1)
 
-                    if overlap > 0:
-                        #omit overlapping frames
-                        for i in range(1,len(chunked_dict[key])):
-                            chunked_dict[key][i] = chunked_dict[key][i][:,overlap:]
-
-                    out_dict[key] = torch.cat(chunked_dict[key],dim=1)
-
-def moveDictListItemToCPU(chunked_dict,itemIndex):
+def moveDictListItemToCPU(chunked_dict: dict, itemIndex: int) -> None:
+    """
+    Move a specific item from a list in chunked_dict to CPU.
+    
+    Args:
+        chunked_dict (dict): Dictionary containing lists of tensors.
+        itemIndex (int): Index of the item in the list to move to CPU.
+    """
 
     for key in chunked_dict.keys():
         if isinstance(chunked_dict[key],list):
@@ -84,51 +105,73 @@ def moveDictListItemToCPU(chunked_dict,itemIndex):
                     if isinstance(chunked_dict[key][itemIndex], torch.Tensor):
                         chunked_dict[key][itemIndex] = chunked_dict[key][itemIndex].cpu()
 
+def alignAndConvertOutputs(predictions: dict, batch: dict, chunked_batch: dict, alignment_type: str, seq_width: int, overlap: int) -> None:
+    """
+    Align and convert outputs.
 
-
-def alignAndConvertOutputs(predictions, batch, chunked_batch, alignment_type, seq_width, overlap):
-
-        #perform gt and pred alignment
-        if alignment_type == "per_chunk_scale_from_poses":
-            #for this we need chunked outputs
-            per_chunk_scale_alignment_from_poses(predictions,chunked_batch)
-            convertDictListsToTensors(chunked_batch,overlap,batch)
-            convertDictListsToTensors(predictions,overlap)
+    Args:
+        predictions (dict): Predictions dictionary.
+        batch (dict): Original batch dictionary.
+        chunked_batch (dict): Chunked batch dictionary.
+        alignment_type (str): Type of alignment to perform.
+        seq_width (int): Sequence width.
+        overlap (int): Overlap size.
+        
+    Returns:
+        None: Results are stored in predictions and batch.
+    """
+    if alignment_type == "per_chunk_scale_from_poses":
+        # for this we need chunked outputs
+        per_chunk_scale_alignment_from_poses(predictions,chunked_batch)
+        convertDictListsToTensors(chunked_batch,overlap,batch)
+        convertDictListsToTensors(predictions,overlap)
+    else:
+        convertDictListsToTensors(chunked_batch,overlap,batch)
+        convertDictListsToTensors(predictions,overlap)
+        if alignment_type == "scale_from_fc_poses":
+            scale_alignment_from_poses(predictions,batch,seq_width)
+        elif alignment_type == "scale_from_poses":
+            scale_alignment_from_poses(predictions,batch)
+        elif alignment_type == "per_frame_scale_from_poses":
+            per_frame_scale_alignment_from_poses(predictions,batch)
+        elif alignment_type == "scale_from_depths":
+            if "depth" not in predictions:
+                raise ValueError("scale_from_depths alignment requires depth head to be enabled.")
+            
+            scale_align_from_depths(predictions,batch)
+        elif alignment_type == "sim3_from_poses":
+            umeyama_alignment_from_poses(predictions, batch, seq_width)
+        elif alignment_type == "sim3_from_points":
+            
+            if "world_points" not in predictions:
+                raise ValueError("sim3_from_points alignment requires point head to be enabled.")
+            
+            batch_transforms, batch_scales = umeyama_alignment_from_points(predictions["world_points"][:,:seq_width], predictions["world_points_conf"][:,:seq_width], batch["world_points"][:,:seq_width], batch["point_masks"][:,:seq_width], confidence_threshold=50.0) #90
+            apply_sim3_alignment_on_dict(predictions, batch["images"].shape[-2:], batch_transforms, batch_scales)
         else:
-            convertDictListsToTensors(chunked_batch,overlap,batch)
-            convertDictListsToTensors(predictions,overlap)
-            if alignment_type == "scale_from_fc_poses":
-                scale_alignment_from_poses(predictions,batch,seq_width)
-            elif alignment_type == "scale_from_poses":
-                scale_alignment_from_poses(predictions,batch)
-            elif alignment_type == "per_frame_scale_from_poses":
-                per_frame_scale_alignment_from_poses(predictions,batch)
-            elif alignment_type == "sim3_from_poses":
-                umeyama_alignment_from_poses(predictions, batch, seq_width)
-            elif alignment_type == "sim3_from_points":
-                
-                if "world_points" not in predictions:
-                    raise ValueError("sim3_from_points alignment requires point head to be enabled.")
-                
-                batch_transforms, batch_scales = umeyama_alignment_from_points(predictions["world_points"][:,:seq_width], predictions["world_points_conf"][:,:seq_width], batch["world_points"][:,:seq_width], batch["point_masks"][:,:seq_width], confidence_threshold=50.0) #90
-                apply_sim3_alignment_on_dict(predictions, batch["images"].shape[-2:], batch_transforms, batch_scales)
-            elif alignment_type == "scale_from_depths":
-                scale_align_from_depths(predictions,batch)
-            else:
-                #no alignment
-                pass
-                
+            # no alignment
+            pass
 
-
-def generate_chunks(num_frames, mode, seq_width, overlap):
+def generate_chunks(num_frames: int, mode: str, seq_width: int, overlap: int) -> list:
+    """
+    Generate chunk indices for a sequence.
+    
+    Args:
+        num_frames (int): Total number of frames in the sequence.
+        mode (str): Chunking mode ("chunk_gt", "chunk_overlap", "all", "two_chunks").
+        seq_width (int): Width of each chunk.
+        overlap (int): Overlap size between chunks (only for "chunk_overlap" mode).
+    Returns:
+        List[List[int]]: List of chunk indices.
+    """
     indices = []
     if mode == "chunk_gt":
 
-        #chunk sequence in non-overlapping sequences of width seq_width
+        # divide sequence in non-overlapping chunks of width seq_width
         for i in range(0, num_frames - seq_width + 1, seq_width):
             indices.append(list(range(i,i+seq_width)))
 
-        #check if all images are at least within one sequence  
+        # check if all images are at least within one sequence  
         if len(indices) * seq_width < num_frames:
             indices.append(list(range(len(indices) * seq_width, num_frames)))
 
@@ -137,18 +180,18 @@ def generate_chunks(num_frames, mode, seq_width, overlap):
         if num_frames < seq_width:
             indices.append(list(range(num_frames)))
         else:
-            #prepare overlapping sequences
+            # divide sequence in overlapping chunks of width seq_width
             for i in range(0, num_frames - seq_width + 1, seq_width - overlap):
                 indices.append(list(range(i,i+seq_width)))
                 
-            #check if all images are at least within one sequence  
+            # check if all images are at least within one sequence  
             if len(indices) * (seq_width - overlap) < num_frames - overlap:
-                #create a subsequence with the last images
+                # create a smaller chunk with the last images
                 indices.append(list(range(len(indices) * (seq_width - overlap), num_frames)))
     elif mode == "all":
         indices = [list(range(num_frames))]
     elif mode == "two_chunks":
-        #sample two non-overlapping chunks regardless of seq_width
+        # sample two non-overlapping chunks regardless of seq_width
         if num_frames < 2:
             raise ValueError("Number of frames must be at least 2 for two_chunks mode.")
         elif num_frames == 2:
@@ -163,8 +206,17 @@ def generate_chunks(num_frames, mode, seq_width, overlap):
         raise ValueError(f"Unknown sequence generation mode: {mode}")
     return indices
 
-def chunk_batch(batch, indices):
-    #generate chunked batch data
+def chunk_batch(batch: dict, indices: list) -> dict:
+    """
+    Chunk a batch of data according to the provided indices.
+    
+    Args:
+        batch (dict): A dictionary containing batch data with tensors of shape [B, N, ...].
+        indices (List[List[int]]): A list of lists, where each sublist contains the indices for a chunk.
+    Returns:
+        dict: A dictionary containing chunked batch data.
+    """
+
     chunked_batch = {}
     for chunk_ids in indices:
         for key in batch.keys():
@@ -172,9 +224,7 @@ def chunk_batch(batch, indices):
                 chunked_batch.setdefault(key,[]).append(batch[key][:,chunk_ids])
     return chunked_batch
 
-
 # Taken from VGGT, as imports do not work correctly else
-
 def check_valid_tensor(input_tensor: Optional[torch.Tensor], name: str = "tensor") -> None:
     """
     Check if a tensor contains NaN or Inf values and log a warning if found.
@@ -281,6 +331,5 @@ def normalize_camera_extrinsics_and_points_batch(
     new_cam_points = check_and_fix_inf_nan(new_cam_points, "new_cam_points", hard_max=None)
     new_world_points = check_and_fix_inf_nan(new_world_points, "new_world_points", hard_max=None)
     new_depths = check_and_fix_inf_nan(new_depths, "new_depths", hard_max=None)
-
 
     return new_extrinsics, new_cam_points, new_world_points, new_depths

@@ -14,9 +14,8 @@ class WaymoDataset(BaseDataset):
         common_conf,
         split: str = "train",
         Waymo_DIR: str = None,
-        min_num_images: int = 24,
         sequence_ids: list = None,
-        exclude_ids = True, # wether to include or exlude ids
+        exclude_ids: bool = True,
         cameras: list = ["cam_01","cam_02","cam_03","cam_04","cam_05"],
         len_train: int = 100000,
         len_test: int = 10000,
@@ -28,7 +27,9 @@ class WaymoDataset(BaseDataset):
             common_conf: Configuration object with common settings.
             split (str): Dataset split, either 'train' or 'test'.
             Waymo_DIR (str): Directory path to Waymo data.
-            min_num_images (int): Minimum number of images per sequence.
+            sequence_ids (list): List of specific sequence IDs to include.
+            exclude_ids (bool): Whether to exclude the specified sequence IDs.
+            cameras (list): List of camera names to include.
             len_train (int): Length of the training dataset.
             len_test (int): Length of the test dataset.
         """
@@ -43,18 +44,17 @@ class WaymoDataset(BaseDataset):
         self.chunk_subsampling = common_conf.augs.chunk_subsampling
 
         # --- Optional Fixed Settings (useful for debugging) ---
-        # Force each sequence to have exactly this many images (if > 0)
+        # force each sequence to have exactly this many images (if > 0)
         self.fixed_num_images = common_conf.fix_img_num
-        # Force a specific aspect ratio for all images
+        # force a specific aspect ratio for all images
         self.fixed_aspect_ratio = common_conf.fix_aspect_ratio
 
         if Waymo_DIR is None:
             raise ValueError("Waymo_DIR must be specified.")
 
         self.Waymo_DIR = Waymo_DIR
-        #self.min_num_images = min_num_images
 
-        #logging.info(f"VKitti_DIR is {self.VKitti_DIR}")
+        logging.info(f"Waymo_DIR is {self.Waymo_DIR}")
 
         if split == "train":
             split_str = "training"
@@ -66,9 +66,10 @@ class WaymoDataset(BaseDataset):
             split_str = "testing"
             self.len_train = len_test
 
+        # load or generate sequence list
         if sequence_ids is not None:
             ids_list = []
-            #gather ids
+            # gather ids if specific ids are provided
             for id in sequence_ids:
                 for camera in cameras:
                     ids = glob.glob(osp.join(self.Waymo_DIR, f"{split_str}/{id}*/frames/{camera}"))
@@ -84,8 +85,7 @@ class WaymoDataset(BaseDataset):
                     sequences = [file_path.split(self.Waymo_DIR)[-1].lstrip('/') for file_path in sequences if file_path.split(self.Waymo_DIR)[-1].lstrip('/') not in ids_list]
                     sequence_list.extend(sequences)
             else:
-                sequence_list = ids_list
-                
+                sequence_list = ids_list                
         else:
             sequence_list = []
             for camera in cameras:
@@ -94,14 +94,14 @@ class WaymoDataset(BaseDataset):
                 sequence_list.extend(sequences)
 
         sequence_list = sorted(sequence_list)
-            
+        
+        # count number of images in each sequence
         self.seq_frame_num = []
         for seq in sequence_list:
-            #count number of images in each sequence
             frame_num = len(glob.glob(osp.join(self.Waymo_DIR, seq, "*.jpg")))
 
+            # adjust for subsampling step if subsampling is enabled
             if self.subsampling_step > 1:
-                #adjust for subsampling step
                 frame_num = int(np.ceil(frame_num / self.subsampling_step))
 
             if self.fix_seq_img_num > 0 and self.fix_seq_img_num < frame_num:
@@ -109,22 +109,22 @@ class WaymoDataset(BaseDataset):
 
             self.seq_frame_num.append(frame_num)
             
-
         self.sequence_list = sequence_list
         self.sequence_list_len = len(self.sequence_list)
-
-        #self.len_train = len(sequence_list)
-
         self.depth_max = 80
         
         status = "Training" if self.training else "Testing"
         logging.info(f"{status}: Waymo Real Data size: {self.sequence_list_len}")
         logging.info(f"{status}: Waymo Data dataset length: {len(self)}")
-        #print(f"{status}: Waymo Real Data size: {self.sequence_list_len}")
-        #print(f"{status}: Waymo Data dataset length: {len(self)}")
-        
 
-    def get_seq_name(self, seq_index):
+    def get_seq_name(self, seq_index: int) -> str:
+        """
+        Get the sequence name for a given index.
+        Args:
+            seq_index (int): Index of the sequence.
+        Returns:
+            str: Sequence name.
+        """
         sequence = self.sequence_list[seq_index].split("/")[1].split("_")[0]
         camera = "".join(self.sequence_list[seq_index].split("/")[3].split("_"))
         return "_".join((sequence,camera))
@@ -159,7 +159,7 @@ class WaymoDataset(BaseDataset):
 
         camera_id = int(seq_name[-1])
         
-        # Load camera parameters
+        # load camera parameters
         try:
             car_poses = np.load(osp.join(self.Waymo_DIR, "/".join(seq_name.split("/")[:2]), "poses.npy"))
 
@@ -171,10 +171,10 @@ class WaymoDataset(BaseDataset):
 
             camera_poses = (model_axis_to_waymo_axis.T @ car_poses @ model_axis_to_waymo_axis) @ (model_axis_to_waymo_axis.T @ calibration_dict["extrinsics"][camera_id])
             
-            #convert to w2c
+            # convert c2w to w2c
             camera_extr_full = np.linalg.inv(camera_poses)
 
-            camera_extr = np.linalg.inv(calibration_dict["extrinsics"][camera_id])[:3,:4] #model_axis_to_waymo_axis.T @ 
+            camera_extr = np.linalg.inv(calibration_dict["extrinsics"][camera_id])[:3,:4]
             
             camera_intr = calibration_dict["proj_mats"][camera_id]
             camera_intr[0,2] += (image_size[1] / 2)
@@ -186,7 +186,6 @@ class WaymoDataset(BaseDataset):
             logging.error(f"Error loading camera parameters for {seq_name}: {e}")
             raise
 
-        
         frame_num = self.seq_frame_num[seq_index]
         
         #just to be sure to get correct number of images and aspect ratio if directly accessing dataset
@@ -198,37 +197,37 @@ class WaymoDataset(BaseDataset):
 
         if ids is None:
             if self.debug:
-                #sample chunk of first x images
+                # sample chunk of first x images
                 ids = np.arange(img_per_seq)
             else:
                 if self.overlapping:
 
-                    #compute max subsampling step, so that we can extract a subtrajectory
+                    # compute max subsampling step, so that we can extract a subtrajectory
                     rev_subsampling_steps = np.arange(self.chunk_subsampling[1],self.chunk_subsampling[0]-1, -1)
                     valid_subsampling_steps = np.ceil(frame_num / rev_subsampling_steps) >= img_per_seq
                     max_subsampling_step = rev_subsampling_steps[np.argmax(valid_subsampling_steps)]
 
-                    #sample subsampling step
+                    # sample subsampling step
                     random_subsampling_step = np.random.randint(self.chunk_subsampling[0],max_subsampling_step+1)
 
                     if random_subsampling_step > 1:
                         frame_num = np.ceil(frame_num / random_subsampling_step)
 
-                    #sample one random chunk of length img_per_seq instead
+                    # sample one random chunk of length img_per_seq instead
                     last_possible_index = (frame_num-img_per_seq)
-                    start_idx = np.random.randint(0,last_possible_index+1)#np.random.default_rng().integers(last_possible_index,endpoint=True)
+                    start_idx = np.random.randint(0,last_possible_index+1)
                     ids = np.arange(start_idx, start_idx + img_per_seq)
 
                     if random_subsampling_step > 1:
-                        #map to real indices
+                        # map to real indices
                         ids = ids * random_subsampling_step
 
                 else:
                     if self.fixed_num_images > 0:
-                        #sample a random chunk, so that we always have non-overlapping chunks
+                        # sample a random chunk, so that we always have non-overlapping chunks
                         start_ids = np.arange(0, frame_num - self.fixed_num_images + 1,self.fixed_num_images)
                         if len(start_ids) * self.fixed_num_images < frame_num:
-                            #add additional chunk that includes last values
+                            # add additional chunk that includes last values
                             start_ids = np.append(start_ids, frame_num-self.fixed_num_images)
 
                         start_idx = np.random.choice(start_ids)
@@ -236,11 +235,10 @@ class WaymoDataset(BaseDataset):
                     else:
                         raise ValueError("Sampling non overlapping chunks requires fixed size chunks")
 
-        #map subsampled ids to real ids
+        # map subsampled ids to real ids
         if self.subsampling_step > 1:
             ids = ids * self.subsampling_step
 
-        #print(f"\nSampled ids: {ids}")
         target_image_shape = self.get_target_shape(aspect_ratio)
         
         images = []
@@ -253,30 +251,22 @@ class WaymoDataset(BaseDataset):
         original_sizes = []
 
         for image_idx in ids:
-            # Process camera matrices
+            # process camera matrices
             extri_opencv = camera_extr_full[image_idx][:3,:4]
-
             intri_opencv = camera_intr
 
+            # load image and depth map
             image_filepath = osp.join(self.Waymo_DIR, seq_name, f"{image_idx:010d}.jpg")
             image = read_image_cv2(image_filepath)
-
-            #cv2.imwrite("waymo_test.png",cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            original_size = np.array(image.shape[:2])
 
             lidar_filepath = osp.join(self.Waymo_DIR, "/".join(seq_name.split("/")[:3]).replace("/frames", "/lidar"), f"{image_idx:010d}.npy")
             lidar_data = np.load(lidar_filepath)
-
-            points = np.concatenate((lidar_data,np.ones((lidar_data.shape[0],1))),axis=-1).T #model_axis_to_waymo_axis.T @ 
-            
-            depth_map = self.lidar_to_depth(points,intri_opencv,camera_extr,image_size)
-            #cv2.imwrite("waymo_test_depth.png",depth_map)
-            
-            #depth_map = depth_map / 100
+            points = np.concatenate((lidar_data,np.ones((lidar_data.shape[0],1))),axis=-1).T
+            depth_map = self.lidar_to_depth(points, intri_opencv, camera_extr, image_size)
             depth_map = threshold_depth_map(depth_map, max_percentile=-1, min_percentile=-1, max_depth=self.depth_max)
 
             assert image.shape[:2] == depth_map.shape, f"Image and depth shape mismatch: {image.shape[:2]} vs {depth_map.shape}"
-
-            original_size = np.array(image.shape[:2])
 
             (
                 image,
@@ -301,8 +291,6 @@ class WaymoDataset(BaseDataset):
                 logging.error(f"Wrong shape for {seq_name}: expected {target_image_shape}, got {image.shape[:2]}")
                 continue
 
-            #cv2.imwrite("waymo_test_aug.png",cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
             images.append(image)
             depths.append(depth_map)
             extrinsics.append(extri_opencv)
@@ -311,82 +299,6 @@ class WaymoDataset(BaseDataset):
             world_points.append(world_coords_points)
             point_masks.append(point_mask)
             original_sizes.append(original_size)
-
-        """
-        server = viser.ViserServer()
-        server.scene.set_up_direction("-y")
-
-        # Optionally attach a callback that sets the viewpoint to the chosen camera
-        def attach_callback(frustum: viser.CameraFrustumHandle, frame: viser.FrameHandle) -> None:
-            @frustum.on_click
-            def _(_) -> None:
-                for client in server.get_clients().values():
-                    client.camera.wxyz = frame.wxyz
-                    client.camera.position = frame.position
-        
-        first_frame_extr = np.pad(extrinsics[0],((0,1),(0,0)),mode='constant')
-        first_frame_extr[3,3] = 1.0
-        for i in range(len(images)):
-        
-            extr = np.pad(extrinsics[i],((0,1),(0,0)),mode='constant')
-            extr[3,3] = 1.0
-            relative_extr = extr @ np.linalg.inv(first_frame_extr)
-            relative_pose = np.linalg.inv(relative_extr)
-
-            quat = mat_to_quat(torch.from_numpy(relative_pose[:3,:3])) #camera_poses[image_idx][:3,:3]))
-            quat = quat[..., [3, 0, 1, 2]]
-            # Add a small frame axis
-            frame_axis=server.scene.add_frame(f"car_{i}",
-            wxyz= tuple(quat),position= tuple(relative_pose[:3,3]),axes_length=1, #camera_poses[image_idx]
-                axes_radius=0.1,
-                origin_radius=0.002,)
-
-            quat = mat_to_quat(torch.from_numpy(relative_extr[:3,:3])) #extri_opencv[:3,:3]))
-            quat = quat[..., [3, 0, 1, 2]]
-            # Add a small frame axis
-            server.scene.add_frame(f"car_extr_{i}",
-            wxyz = tuple(quat),position= tuple(relative_extr[:3,3]),axes_length=1,  #extri_opencv[:3,3]*0.001
-                axes_radius=0.001,
-                origin_radius=0.002,)
-            
-            H,W = images[i].shape[:2]
-
-            fy = 1.1 * H
-            fov = 2 * np.arctan2(H / 2, fy)
-
-            # Add the frustum
-            frustum_cam = server.scene.add_camera_frustum(
-                f"car_{i}/frustum", fov=fov, aspect=W / H, scale=0.1, image=images[i], line_width=1.0
-            )
-            
-            attach_callback(frustum_cam, frame_axis)
-
-            cam_points_p = cam_points[i][point_masks[i]].reshape(-1,3) #.reshape(3,-1) #.reshape(3,-1)
-            cam_points_p = np.concatenate((cam_points_p,np.ones((cam_points_p.shape[0],1))),axis=1)
-            cam_points_p = relative_pose[:3,:4] @ cam_points_p.T
-
-            server.scene.add_point_cloud(
-                name=f"/points_cam{i}",
-                points=cam_points_p.T.reshape(-1,3),
-                colors=(0.0,0.0,1.0),
-                point_size=0.01,
-                visible=True,
-                )
-
-        
-            print(camera_poses[0]) #car2world
-            world2car = np.linalg.inv(camera_poses[0])
-            print(world2car)
-            point_z = camera_poses[0][:4,3] + np.array([1,0,0,0])
-            print(point_z)
-            point_cam = world2car @ point_z
-            print("point in cam coords:", point_cam.T)
-        
-
-        while True:
-            pass
-        """
-        
 
         set_name = "waymo"
         batch = {
@@ -403,16 +315,25 @@ class WaymoDataset(BaseDataset):
             "original_sizes": original_sizes,
         }
         return batch
+    
 
-    def lidar_to_depth(self, points, intrinsics, extrinsics, image_size, eps=0.05):
+    def lidar_to_depth(self, points: np.ndarray, intrinsics: np.ndarray, extrinsics: np.ndarray, image_size: tuple, eps: float = 0.05) -> np.ndarray:
         """
-        points: 3xN / 4xN
+        Convert LiDAR points to a depth map using camera intrinsics and extrinsics.
+        Args:
+            points (np.ndarray): LiDAR points in homogeneous coordinates (4xN).
+            intrinsics (np.ndarray): Camera intrinsic matrix (3x3).
+            extrinsics (np.ndarray): Camera extrinsic matrix (3x4).
+            image_size (tuple): Size of the image (height, width).
+            eps (float): Small value to handle depth comparisons.
+        Returns:
+            np.ndarray: Depth map of shape (H, W).
         """
         H,W = image_size
         
         lidar_cam_points = (intrinsics @ (extrinsics @ points)).T
 
-        #filter out points behind cam
+        # filter out points behind cam
         lidar_cam_points = lidar_cam_points[lidar_cam_points[:,2]>0]
 
         pixels = lidar_cam_points[:,:2] / lidar_cam_points[:,2:]
@@ -420,13 +341,6 @@ class WaymoDataset(BaseDataset):
 
         pixels = pixels[valid]
         depths = lidar_cam_points[valid][:,2]
-
-        """
-        pixels_trunc = np.floor(pixels).astype(int)
-        for i in range(pixels_trunc.shape[0]):
-            depth_map[(pixels_trunc[i,1], pixels_trunc[i,0])] = depths[i] * 100
-
-        """
 
         depth_map = np.zeros((H, W), dtype=np.float32)
         weight_map = np.zeros((H, W), dtype=np.float32)

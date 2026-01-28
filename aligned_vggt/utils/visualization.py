@@ -1,5 +1,4 @@
 import os
-import glob
 import time
 import threading
 from typing import List
@@ -9,8 +8,6 @@ from tqdm.auto import tqdm
 import viser
 import viser.transforms as viser_tf
 import cv2
-import requests
-import copy
 
 try:
     import onnxruntime
@@ -18,12 +15,16 @@ except ImportError:
     print("onnxruntime not found. Sky segmentation may not work.")
 
 from vggt.vggt.utils.geometry import closed_form_inverse_se3, unproject_depth_map_to_point_map
+from vggt.visual_util import run_skyseg, download_file_from_url
+
+# adapted from VGGT's codebase
 
 def viser_wrapper(
     pred_dict: dict,
     port: int = 8080,
     init_conf_threshold: float = 50.0,  # represents percentage (e.g., 50 means filter lowest 50%)
     background_mode: bool = True,
+    mask_sky: bool = False,
 ):
     """
     Visualize predicted 3D points and camera poses with viser.
@@ -41,10 +42,8 @@ def viser_wrapper(
             }
         port (int): Port number for the viser server.
         init_conf_threshold (float): Initial percentage of low-confidence points to filter out.
-        use_point_map (bool): Whether to visualize world_points or use depth-based points.
         background_mode (bool): Whether to run the server in background thread.
         mask_sky (bool): Whether to apply sky segmentation to filter out sky points.
-        image_folder (str): Path to the folder containing input images.
     """
     print(f"Starting viser server on port {port}")
 
@@ -71,8 +70,8 @@ def viser_wrapper(
         conf = pred_dict["world_points_conf"]  # (S, H, W)
 
     # Apply sky segmentation if enabled
-    #if conf and  mask_sky and image_folder is not None:
-        #conf = apply_sky_segmentation(conf, image_folder)
+    if conf and mask_sky:
+        conf = sky_seg_mod(conf, images)
 
     # Convert images from (S, 3, H, W) to (S, H, W, 3)
     # Then flatten everything for the point cloud
@@ -238,22 +237,18 @@ def viser_wrapper(
 
     return server
 
-
-# Helper functions for sky segmentation
-def apply_sky_segmentation(conf: np.ndarray, image_folder: str) -> np.ndarray:
+def sky_seg_mod(conf: np.ndarray, images: np.ndarray) -> np.ndarray:
     """
     Apply sky segmentation to confidence scores.
 
     Args:
         conf (np.ndarray): Confidence scores with shape (S, H, W)
-        image_folder (str): Path to the folder containing input images
+        images (np.ndarray): Input images with shape (S, 3, H, W)
 
     Returns:
         np.ndarray: Updated confidence scores with sky regions masked out
     """
     S, H, W = conf.shape
-    sky_masks_dir = image_folder.rstrip("/") + "_sky_masks"
-    os.makedirs(sky_masks_dir, exist_ok=True)
 
     # Download skyseg.onnx if it doesn't exist
     if not os.path.exists("skyseg.onnx"):
@@ -261,18 +256,20 @@ def apply_sky_segmentation(conf: np.ndarray, image_folder: str) -> np.ndarray:
         download_file_from_url("https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx", "skyseg.onnx")
 
     skyseg_session = onnxruntime.InferenceSession("skyseg.onnx")
-    image_files = sorted(glob.glob(os.path.join(image_folder, "*")))
     sky_mask_list = []
 
     print("Generating sky masks...")
-    for i, image_path in enumerate(tqdm(image_files[:S])):  # Limit to the number of images in the batch
-        image_name = os.path.basename(image_path)
-        mask_filepath = os.path.join(sky_masks_dir, image_name)
-
-        if os.path.exists(mask_filepath):
-            sky_mask = cv2.imread(mask_filepath, cv2.IMREAD_GRAYSCALE)
-        else:
-            sky_mask = segment_sky(image_path, skyseg_session, mask_filepath)
+    for i in range(S):
+        image = images[i]  # shape (3, H, W)
+        image = (image.transpose(1, 2, 0) * 255).astype(np.uint8)
+        
+        result_map = run_skyseg(skyseg_session, [320, 320], image)
+        # resize the result_map to the original image size
+        result_map_original = cv2.resize(result_map, (image.shape[1], image.shape[0]))
+        # Fix: Invert the mask so that 255 = non-sky, 0 = sky
+        # The model outputs low values for sky, high values for non-sky
+        sky_mask = np.zeros_like(result_map_original)
+        sky_mask[result_map_original < 32] = 255  # Use threshold of 32
 
         # Resize mask to match H×W if needed
         if sky_mask.shape[0] != H or sky_mask.shape[1] != W:
@@ -288,191 +285,3 @@ def apply_sky_segmentation(conf: np.ndarray, image_folder: str) -> np.ndarray:
 
     print("Sky segmentation applied successfully")
     return conf
-
-
-def download_file_from_url(url, filename):
-    """Downloads a file from a Hugging Face model repo, handling redirects."""
-    try:
-        # Get the redirect URL
-        response = requests.get(url, allow_redirects=False)
-        response.raise_for_status()  # Raise HTTPError for bad requests (4xx or 5xx)
-
-        if response.status_code == 302:  # Expecting a redirect
-            redirect_url = response.headers["Location"]
-            response = requests.get(redirect_url, stream=True)
-            response.raise_for_status()
-        else:
-            print(f"Unexpected status code: {response.status_code}")
-            return
-
-        with open(filename, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"Downloaded {filename} successfully.")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading file: {e}")
-
-
-def segment_sky(image_path, onnx_session, mask_filename=None):
-    """
-    Segments sky from an image using an ONNX model.
-    Thanks for the great model provided by https://github.com/xiongzhu666/Sky-Segmentation-and-Post-processing
-
-    Args:
-        image_path: Path to input image
-        onnx_session: ONNX runtime session with loaded model
-        mask_filename: Path to save the output mask
-
-    Returns:
-        np.ndarray: Binary mask where 255 indicates non-sky regions
-    """
-
-    assert mask_filename is not None
-    image = cv2.imread(image_path)
-
-    result_map = run_skyseg(onnx_session, [320, 320], image)
-    # resize the result_map to the original image size
-    result_map_original = cv2.resize(result_map, (image.shape[1], image.shape[0]))
-
-    # Fix: Invert the mask so that 255 = non-sky, 0 = sky
-    # The model outputs low values for sky, high values for non-sky
-    output_mask = np.zeros_like(result_map_original)
-    output_mask[result_map_original < 32] = 255  # Use threshold of 32
-
-    os.makedirs(os.path.dirname(mask_filename), exist_ok=True)
-    cv2.imwrite(mask_filename, output_mask)
-    return output_mask
-
-
-def run_skyseg(onnx_session, input_size, image):
-    """
-    Runs sky segmentation inference using ONNX model.
-
-    Args:
-        onnx_session: ONNX runtime session
-        input_size: Target size for model input (width, height)
-        image: Input image in BGR format
-
-    Returns:
-        np.ndarray: Segmentation mask
-    """
-
-    # Pre process:Resize, BGR->RGB, Transpose, PyTorch standardization, float32 cast
-    temp_image = copy.deepcopy(image)
-    resize_image = cv2.resize(temp_image, dsize=(input_size[0], input_size[1]))
-    x = cv2.cvtColor(resize_image, cv2.COLOR_BGR2RGB)
-    x = np.array(x, dtype=np.float32)
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
-    x = (x / 255 - mean) / std
-    x = x.transpose(2, 0, 1)
-    x = x.reshape(-1, 3, input_size[0], input_size[1]).astype("float32")
-
-    # Inference
-    input_name = onnx_session.get_inputs()[0].name
-    output_name = onnx_session.get_outputs()[0].name
-    onnx_result = onnx_session.run([output_name], {input_name: x})
-
-    # Post process
-    onnx_result = np.array(onnx_result).squeeze()
-    min_value = np.min(onnx_result)
-    max_value = np.max(onnx_result)
-    onnx_result = (onnx_result - min_value) / (max_value - min_value)
-    onnx_result *= 255
-    onnx_result = onnx_result.astype("uint8")
-
-    return onnx_result
-
-def download_file_from_u4rl(url, filename):
-    """Downloads a file from a Hugging Face model repo, handling redirects."""
-    try:
-        # Get the redirect URL
-        response = requests.get(url, allow_redirects=False)
-        response.raise_for_status()  # Raise HTTPError for bad requests (4xx or 5xx)
-
-        if response.status_code == 302:  # Expecting a redirect
-            redirect_url = response.headers["Location"]
-            response = requests.get(redirect_url, stream=True)
-            response.raise_for_status()
-        else:
-            print(f"Unexpected status code: {response.status_code}")
-            return
-
-        with open(filename, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"Downloaded {filename} successfully.")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading file: {e}")
-
-def segment_sky(image_path, onnx_session, mask_filename=None):
-    """
-    Segments sky from an image using an ONNX model.
-    Thanks for the great model provided by https://github.com/xiongzhu666/Sky-Segmentation-and-Post-processing
-
-    Args:
-        image_path: Path to input image
-        onnx_session: ONNX runtime session with loaded model
-        mask_filename: Path to save the output mask
-
-    Returns:
-        np.ndarray: Binary mask where 255 indicates non-sky regions
-    """
-
-    assert mask_filename is not None
-    image = cv2.imread(image_path)
-
-    result_map = run_skyseg(onnx_session, [320, 320], image)
-    # resize the result_map to the original image size
-    result_map_original = cv2.resize(result_map, (image.shape[1], image.shape[0]))
-
-    # Fix: Invert the mask so that 255 = non-sky, 0 = sky
-    # The model outputs low values for sky, high values for non-sky
-    output_mask = np.zeros_like(result_map_original)
-    output_mask[result_map_original < 32] = 255  # Use threshold of 32
-
-    os.makedirs(os.path.dirname(mask_filename), exist_ok=True)
-    cv2.imwrite(mask_filename, output_mask)
-    return output_mask
-
-
-def run_skyseg(onnx_session, input_size, image):
-    """
-    Runs sky segmentation inference using ONNX model.
-
-    Args:
-        onnx_session: ONNX runtime session
-        input_size: Target size for model input (width, height)
-        image: Input image in BGR format
-
-    Returns:
-        np.ndarray: Segmentation mask
-    """
-
-    # Pre process:Resize, BGR->RGB, Transpose, PyTorch standardization, float32 cast
-    temp_image = copy.deepcopy(image)
-    resize_image = cv2.resize(temp_image, dsize=(input_size[0], input_size[1]))
-    x = cv2.cvtColor(resize_image, cv2.COLOR_BGR2RGB)
-    x = np.array(x, dtype=np.float32)
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
-    x = (x / 255 - mean) / std
-    x = x.transpose(2, 0, 1)
-    x = x.reshape(-1, 3, input_size[0], input_size[1]).astype("float32")
-
-    # Inference
-    input_name = onnx_session.get_inputs()[0].name
-    output_name = onnx_session.get_outputs()[0].name
-    onnx_result = onnx_session.run([output_name], {input_name: x})
-
-    # Post process
-    onnx_result = np.array(onnx_result).squeeze()
-    min_value = np.min(onnx_result)
-    max_value = np.max(onnx_result)
-    onnx_result = (onnx_result - min_value) / (max_value - min_value)
-    onnx_result *= 255
-    onnx_result = onnx_result.astype("uint8")
-
-    return onnx_result

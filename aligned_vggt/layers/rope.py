@@ -96,13 +96,12 @@ class RotaryPositionEmbedding(nn.Module):
         return (tokens * cos) + (self._rotate_features(tokens) * sin)
 
     def forward(self, tokens: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-        """Applies 2D rotary position embeddings to input tokens.
+        """Applies 1D rotary position embeddings to input tokens.
 
         Args:
             tokens: Input tensor of shape (batch_size, n_heads, n_tokens, dim).
                    The feature dimension (dim) must be divisible by 4.
-            positions: Position tensor of shape (batch_size, n_tokens, 2) containing
-                      the y and x coordinates for each token.
+            positions: Position tensor of shape (batch_size, n_tokens) containing a 1d index per token
 
         Returns:
             Tensor of same shape as input with applied 2D rotary position embeddings.
