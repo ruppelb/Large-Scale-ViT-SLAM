@@ -70,7 +70,7 @@ def viser_wrapper(
         conf = pred_dict["world_points_conf"]  # (S, H, W)
 
     # Apply sky segmentation if enabled
-    if conf and mask_sky:
+    if conf is not None and mask_sky:
         conf = sky_seg_mod(conf, images)
 
     # Convert images from (S, 3, H, W) to (S, H, W, 3)

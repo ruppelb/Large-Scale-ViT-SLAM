@@ -377,12 +377,16 @@ class Metrics(torch.nn.Module):
             model: Model that generates outputs.
             device: Device to run the model on.
         """
-        seq_data = get_sequence_data(*dataset)
+
+        seq_name = dataset.get_seq_name(0)
+        num_sequence_frames = dataset.seq_frame_num[0]
+        seq_data = get_sequence_data(dataset,0,seq_name,num_sequence_frames)
         seq_data["images"] = seq_data["images"].to(device)
+        
         predictions = apply_sequence_to_model(seq_data, model, self.chunk_width, self.num_overlap, self.full_seq_sample_mode, self.gt_alignment_type)
         
+        # prepare data for visualization
         if predictions["pose_enc"].shape[-1] == 9:
-            # prepare poses
             pred_extr, pred_intr = pose_encoding_to_extri_intri(predictions["pose_enc"],image_size_hw=seq_data["images"].shape[-2:])
         elif predictions["pose_enc"].shape[-1] == 7:
             pred_extr = pose_encoding_to_extri(predictions["pose_enc"])[:,:,:3,:4]
@@ -395,7 +399,13 @@ class Metrics(torch.nn.Module):
         predictions["extrinsic"] = pred_extr
         predictions["intrinsic"] = pred_intr
 
-        viser_server = viser_wrapper(predictions)
+        # convert to keys to numpy arrays and move to cpu
+        for key in predictions:
+            if key in ["images","intrinsic","extrinsic","world_points","world_points_conf","depth","depth_conf"]:
+                if isinstance(predictions[key], torch.Tensor):
+                    predictions[key] = predictions[key].detach().cpu().numpy().squeeze(0)
+                    
+        viser_server = viser_wrapper(predictions,background_mode=False)
 
     def save_dict_for_visualization(self, predictions: dict, seq_data: dict, save_path: str) -> None:
         """
@@ -406,8 +416,9 @@ class Metrics(torch.nn.Module):
             seq_data: dict with gt data.
             save_path: path to save the data.
         """
+
+        # prepare data for visualization
         if predictions["pose_enc"].shape[-1] == 9:
-            # prepare poses
             pred_extr, pred_intr = pose_encoding_to_extri_intri(predictions["pose_enc"],image_size_hw=seq_data["images"].shape[-2:])
         elif predictions["pose_enc"].shape[-1] == 7:
             pred_extr = pose_encoding_to_extri(predictions["pose_enc"])[:,:,:3,:4]
