@@ -177,7 +177,7 @@ class Metrics(torch.nn.Module):
 
             predictions = apply_sequence_to_model(seq_data, model, self.chunk_width, self.num_overlap, self.full_seq_sample_mode, self.gt_alignment_type)
             
-            log_additional_data(predictions,per_seq_dict, self.chunk_width, self.num_overlap)
+            log_additional_data(predictions,per_seq_dict)
 
             pred_poses, gt_poses, pred_points, gt_points = self.prepare_data_for_metrics(predictions,seq_data,max_points_icp=self.max_points_for_icp_full_seq,device=device)
 

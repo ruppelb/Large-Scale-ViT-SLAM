@@ -7,6 +7,8 @@ from hydra import initialize, compose
 from hydra.utils import instantiate
 from iopath.common.file_io import g_pathmgr
 
+import certifi
+
 import torch
 from huggingface_hub import PyTorchModelHubMixin
 
@@ -423,6 +425,9 @@ parser.add_argument("--num_nodes", type=int, default=1)
 def main():
     """Main function to run training, validation, or testing based on the provided configuration."""
     args = parser.parse_args()
+
+    # prevent issues with ssl certificate in some scenarios (use certifi's default certificate)
+    os.environ['SSL_CERT_FILE'] = certifi.where()
 
     with initialize(version_base=None, config_path="config"):
         cfg = compose(config_name=args.config)

@@ -23,6 +23,7 @@ dependencies = [
     "requests",
     "wcmatch",
     "gradio",
+    "certifi",
 ]
 
 # Using setuptools as the build backend
